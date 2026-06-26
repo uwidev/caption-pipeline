@@ -18,7 +18,6 @@ from transformers import PreTrainedTokenizerBase
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.core.help import step_help
-from caption_pipeline.utils.booru_characters import DanbooruCharacters
 from caption_pipeline.utils.character_extractor import (
     CharacterEntry,
     CharacterExtractor,
@@ -75,7 +74,6 @@ class TagGenerationStep(PipelineStep):
     _general_tags: ClassVar[set[str] | None] = None
     _character_tags: ClassVar[set[str] | None] = None
     _tokenizer: ClassVar[PreTrainedTokenizerBase | None] = None
-    _torii_db: ClassVar[DanbooruCharacters | None] = None
     _models_loaded: ClassVar[bool] = False
     _model_instances: ClassVar[dict[str, Any]] = {}
 
@@ -161,14 +159,6 @@ class TagGenerationStep(PipelineStep):
 
         if ai_rating or context.rating:
             result.rating = ai_rating or context.rating
-
-        # Build Torii metadata
-        result.metadata.update(self._build_torii_metadata(
-            tags=final_tags,
-            character_tags=character_tags,
-            general_tags=combined_general,
-            user_tags=user_tags,
-        ))
 
         return result
 
@@ -406,9 +396,6 @@ class TagGenerationStep(PipelineStep):
         if cls._tokenizer is None:
             cls._tokenizer = get_tokenizer()
 
-        if cls._torii_db is None:
-            cls._torii_db = DanbooruCharacters()
-
         logger.debug(
             f"Loaded {len(cls._general_tags)} general tags and "
             f"{len(cls._character_tags)} character tags"
@@ -643,84 +630,6 @@ class TagGenerationStep(PipelineStep):
         result.sort(key=lambda x: tags.get(x, 0), reverse=True)
 
         return result
-
-    # =========================================================================
-    # Torii Metadata
-    # =========================================================================
-
-    def _build_torii_metadata(
-        self,
-        tags: list[str],
-        character_tags: list[str],
-        general_tags: dict[str, float],
-        user_tags: set[str],
-    ) -> dict[str, Any]:
-        from imgutils.tagging import character
-
-        torii_data: dict[str, Any] = {
-            "tags": [],
-            "characters": [],
-            "char_p_tags": {"chars": {}, "skins": {}},
-            "char_descr": {"chars": {}, "skins": {}},
-        }
-
-        underscore_tags: list[str] = [tag.replace(" ", "_") for tag in tags]
-
-        if not character_tags:
-            characteristics: list[str] = []
-            for tag in underscore_tags:
-                if character.is_basic_character_tag(tag):
-                    characteristics.append(tag)
-
-            for char_tag in characteristics:
-                if char_tag in underscore_tags:
-                    underscore_tags.remove(char_tag)
-
-            torii_fix: list[str] = ["grabbing_another's_breast", "looking_over_eyewear"]
-            fix_tags: list[str] = [t for t in characteristics if t in torii_fix]
-            for fix_tag in fix_tags:
-                characteristics.remove(fix_tag)
-                if fix_tag not in underscore_tags:
-                    underscore_tags.append(fix_tag)
-
-            torii_data["char_p_tags"]["chars"]["DO NOT CAPTION CHARACTER NAME"] = (
-                characteristics
-            )
-
-        else:
-            for char_name in character_tags:
-                payload: dict[str, str] | None = self._torii_db.query(char_name)
-                if not payload:
-                    continue
-
-                popular_tags_str: str = payload.get("popular_tags", "[]")
-                try:
-                    popular_tags: list[str] = ast.literal_eval(popular_tags_str)
-                except (ValueError, SyntaxError) as e:
-                    logger.warning(f"Failed to parse popular_tags for {char_name}: {e}")
-                    popular_tags = []
-
-                popular_char_tags: list[str] = [
-                    t for t in popular_tags
-                    if character.is_basic_character_tag(t)
-                ]
-
-                for t in popular_char_tags:
-                    underscore_form: str = t.replace(" ", "_")
-                    if underscore_form in underscore_tags:
-                        underscore_tags.remove(underscore_form)
-
-                description: str = payload.get("description", "")
-
-                torii_data["char_p_tags"]["chars"][char_name] = popular_char_tags
-                torii_data["char_descr"]["chars"][char_name] = description
-
-        underscore_tags = character.drop_basic_character_tags(underscore_tags)
-
-        torii_data["tags"] = underscore_tags
-        torii_data["characters"] = character_tags
-
-        return torii_data
 
     def _clean_tag(self, tag: str) -> str:
         if not tag:
