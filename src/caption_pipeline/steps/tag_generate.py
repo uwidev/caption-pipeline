@@ -125,237 +125,52 @@ class TagGenerationStep(PipelineStep):
 
         image: Image.Image = context.load_image()
 
-        user_tags: set[str] = self._extract_user_tags(context)
-        user_rating: str | None = context.rating
-
-        # Log user hints at DEBUG level
-        if user_tags:
-            logger.debug(f"User hints ({len(user_tags)}):")
-            for i, tag in enumerate(sorted(user_tags)):
-                logger.debug(f"  {i+1:3d}. {tag}")
-
-        character_entries = context.character_entries
-        user_characters = context.get_character_tags() if character_entries else []
-
-        if character_entries:
-            logger.debug(f"Character entries from context ({len(character_entries)}):")
-            for entry in character_entries:
-                logger.debug(f"  - {entry.tag} (source: {entry.source.name})")
-
-        use_ai_characters = self.infer_characters
-
-        if "original" in user_tags or "borrowed character" in user_tags:
-            use_ai_characters = False
-            logger.debug("Special character tags detected - disabling AI character detection")
-
-        if character_entries:
-            use_ai_characters = False
-            logger.debug(f"User-provided characters exist ({len(character_entries)}) - AI character detection DISABLED")
-
-        # === WARNING: Check for missing grounding tags ===
-        # Initialize character extractor if not already done
-        if self._character_extractor is None:
-            self._character_extractor = CharacterExtractor()
+        # Get user tags (already normalized and extracted at CLI)
+        # But we need them as a set for processing
+        user_tags = self._get_user_tags_as_set(context)
         
-        # Check if any character tags were provided but none found
-        has_character_hint = any(
-            tag.startswith("character:") or 
-            tag in self._character_tags or 
-            self._character_extractor.is_character_tag(tag)
-            for tag in user_tags
-        )
-        
-        if not character_entries and not has_character_hint:
-            # Check if user provided any character hints at all
-            if not any(tag.startswith("character:") for tag in user_tags):
-                logger.warning(
-                    f"No character tags found in user hints for {context.image_path.name}. "
-                    "If this is intentional, add 'original' or 'borrowed_character' to suppress this warning."
-                )
-        elif not character_entries and has_character_hint:
-            # User provided character hints but none were resolved
-            logger.warning(
-                f"Character hints provided but none resolved for {context.image_path.name}. "
-                "Check tag spelling or database coverage."
-            )
-
+        # Run AI inference
         ai_tags, ai_rating, ai_characters = self._run_inference(image)
 
-        # Log AI inference results at DEBUG level
-        logger.debug(f"AI inference results ({len(ai_tags)} total tags):")
-        sorted_ai = sorted(ai_tags.items(), key=lambda x: -x[1])
-        for i, (tag, conf) in enumerate(sorted_ai[:20]):
-            logger.debug(f"  {i+1:3d}. {tag}: {conf:.3f}")
-        if len(sorted_ai) > 20:
-            logger.debug(f"  ... and {len(sorted_ai) - 20} more")
+        # Combine tags (pure tag combination)
+        combined_general, ai_character_tags = self._combine_tags(
+            user_tags=user_tags,
+            ai_tags=ai_tags,
+            ai_characters=ai_characters,
+        )
 
-        if ai_characters:
-            logger.debug(f"AI-inferenced characters ({len(ai_characters)}):")
-            for char, conf in ai_characters.items():
-                logger.debug(f"  - {char}: {conf:.3f}")
+        # Get user characters (already extracted at CLI)
+        user_characters = context.get_character_tags()
+        
+        # Create character entries (handles special tags, prioritization)
+        character_tags, character_entries = self._create_character_entries(
+            user_tags=user_tags,
+            user_characters=user_characters,
+            ai_character_tags=ai_character_tags,
+            context=context,
+        )
 
+        # Apply filters
+        final_tags = self._apply_filters(combined_general)
+
+        # Build result
         result = context.copy()
         result.inferenced_tags = ai_tags
+        result.set_tags(list(final_tags), section=1)
+        result.character_entries = character_entries
 
-        main_tags = {}
-        for tag, conf in ai_tags.items():
-            if conf >= self.threshold:
-                main_tags[tag] = conf
+        if ai_rating or context.rating:
+            result.rating = ai_rating or context.rating
 
-        combined_tags, character_tags = self._combine_tags(
-            user_tags=user_tags,
-            ai_tags=main_tags,
-            ai_characters=ai_characters,
-            user_characters=user_characters,
-        )
-
-        if use_ai_characters:
-            added_ai_chars = []
-            for char, conf in ai_characters.items():
-                if conf >= 0.5:
-                    normalized = self._normalize_character_tag(char)
-                    if normalized and normalized not in character_tags:
-                        character_tags.append(normalized)
-                        added_ai_chars.append(f"{normalized} ({conf:.3f})")
-            if added_ai_chars:
-                logger.debug(f"Added AI-detected characters: {', '.join(added_ai_chars)}")
-
-        final_tags = self._apply_filters(combined_tags)
-
-        # === Show deltas: What changed ===
-        original_tag_count = len(user_tags)
-        final_tag_count = len(final_tags)
-        
-        # Tags that were added by AI (not in user hints)
-        user_tag_set = {self._normalize_character_tag(t) for t in user_tags}
-        added_by_ai = [t for t in final_tags if t not in user_tag_set]
-        
-        # Tags that were removed (in user hints but not in final)
-        removed = [t for t in user_tags if t not in final_tags]
-        
-        # Tags that were kept
-        kept = [t for t in final_tags if t in user_tag_set]
-        
-        # Characters added/kept
-        final_char_tags = [e.tag for e in result.character_entries] if result.character_entries else []
-        user_char_set = {self._normalize_character_tag(c) for c in user_characters}
-        
-        kept_chars = [c for c in final_char_tags if c in user_char_set] if character_entries else []
-        added_chars = [c for c in final_char_tags if c not in user_char_set] if character_entries else []
-        
-        # Show summary at INFO level
-        logger.info(
-            f"Tag generation for {context.image_path.name}: "
-            f"{original_tag_count} user tags → {final_tag_count} final tags"
-        )
-        
-        if kept:
-            logger.info(f"  Kept: {len(kept)} tags")
-            logger.debug(f"    {', '.join(kept[:10])}{'...' if len(kept) > 10 else ''}")
-        
-        if added_by_ai:
-            logger.info(f"  Added by AI: {len(added_by_ai)} tags")
-            logger.debug(f"    {', '.join(added_by_ai[:10])}{'...' if len(added_by_ai) > 10 else ''}")
-        
-        if removed:
-            logger.info(f"  Removed: {len(removed)} tags")
-            logger.debug(f"    {', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
-        
-        if kept_chars:
-            logger.info(f"  Characters kept: {', '.join(kept_chars)}")
-        
-        if added_chars:
-            logger.info(f"  Characters added: {', '.join(added_chars)}")
-        
-        # Show final tags at DEBUG level
-        if final_tags:
-            logger.debug(f"Final tags ({len(final_tags)}):")
-            for i, tag in enumerate(final_tags):
-                logger.debug(f"  {i+1:3d}. {tag}")
-
-        torii_metadata = self._build_torii_metadata(
+        # Build Torii metadata
+        result.metadata.update(self._build_torii_metadata(
             tags=final_tags,
             character_tags=character_tags,
-            general_tags=combined_tags,
+            general_tags=combined_general,
             user_tags=user_tags,
-        )
-
-        result.set_tags(list(final_tags), section=1)
-
-        if character_entries:
-            result.character_entries = character_entries.copy()
-        else:
-            result.character_entries = []
-            char_db = get_character_database()
-            for char in character_tags:
-                data = char_db.query(char)
-                if data:
-                    result.character_entries.append(
-                        CharacterEntry.from_database(char, data)
-                    )
-                else:
-                    result.character_entries.append(
-                        CharacterEntry(
-                            tag=char,
-                            source=CharacterSource.EXTRACTED,
-                        )
-                    )
-
-        if ai_rating or user_rating:
-            result.rating = ai_rating or user_rating
-            logger.info(f"  Rating: {result.rating}")
-
-        result.metadata["char_p_tags"] = torii_metadata["char_p_tags"]
-        result.metadata["char_descr"] = torii_metadata["char_descr"]
-        result.metadata["torii_tags"] = torii_metadata["tags"]
-        result.metadata["torii_characters"] = torii_metadata["characters"]
+        ))
 
         return result
-
-    def process_batch(self, contexts: list[ImageContext]) -> list[ImageContext]:
-        """Process multiple contexts with models loaded once."""
-        if not contexts:
-            return contexts
-
-        self._load_databases()
-        self._load_models()
-
-        valid_indices: list[int] = []
-        for idx, context in enumerate(contexts):
-            if self.validate(context):
-                try:
-                    context.load_image()
-                    valid_indices.append(idx)
-                except Exception as e:
-                    logger.error(f"Failed to load image {context.image_path.name}: {e}")
-
-        if not valid_indices:
-            return contexts
-
-        results: list[tuple[int, ImageContext]] = []
-
-        for idx in valid_indices:
-            context: ImageContext = contexts[idx]
-            try:
-                result: ImageContext | None = self.process(context)
-                if result is not None:
-                    results.append((idx, result))
-                else:
-                    results.append((idx, context))
-            except Exception as e:
-                logger.error(f"Failed to process {context.image_path.name}: {e}")
-                results.append((idx, context))
-
-        results.sort(key=lambda x: x[0])
-        processed_contexts: list[ImageContext] = [r[1] for r in results]
-
-        for pos, idx in enumerate(valid_indices):
-            contexts[idx] = processed_contexts[pos]
-
-        if self.unload_models_after_batch:
-            self._unload_models()
-
-        return contexts
 
     def process_batch(self, contexts: list[ImageContext]) -> list[ImageContext]:
         """Process multiple contexts with models loaded once."""
@@ -739,74 +554,73 @@ class TagGenerationStep(PipelineStep):
         user_tags: set[str],
         ai_tags: dict[str, float],
         ai_characters: dict[str, float],
-        user_characters: list[str],
     ) -> tuple[dict[str, float], list[str]]:
-        ai_characters_from_tags: list[str] = []
-        ai_general_tags: dict[str, float] = {}
-
-        for tag, conf in ai_tags.items():
-            normalized = self._normalize_character_tag(tag)
-            if normalized and normalized in self._character_tags:
-                if normalized not in ai_characters_from_tags:
-                    ai_characters_from_tags.append(normalized)
-            else:
-                ai_general_tags[normalized] = conf
-
-        normalized_user_tags = {self._normalize_character_tag(tag) for tag in user_tags}
+        """
+        Combine user tags and AI tags into a single set.
         
-        remaining_user_tags = normalized_user_tags.copy()
-        for char in user_characters:
-            if char in remaining_user_tags:
-                remaining_user_tags.remove(char)
-
-        general_tags: dict[str, float] = {}
-
-        for tag, conf in ai_general_tags.items():
-            general_tags[tag] = conf
-
-        if remaining_user_tags:
-            user_count = len(remaining_user_tags)
+        This method ONLY deals with combining tags. It does NOT:
+        - Normalize character tags (should be done upstream)
+        - Check for special tags (should be done upstream)
+        - Handle character entries (should be done upstream)
+        
+        Args:
+            user_tags: User-provided tags (already normalized)
+            ai_tags: AI-inferenced general tags
+            ai_characters: AI-inferenced character tags (tag -> confidence)
+        
+        Returns:
+            Tuple of (combined_general_tags, character_tags_from_ai)
+        """
+        # Start with AI general tags
+        combined_general: dict[str, float] = {}
+        for tag, conf in ai_tags.items():
+            # Skip if this is a character tag (they're handled separately)
+            if tag in self._character_tags:
+                continue
+            combined_general[tag] = conf
+        
+        # Apply user tag penalty/boost
+        if user_tags:
+            user_count = len(user_tags)
             
+            # Calculate penalty based on user tag count
             penalty = (
                 self.user_tag_penalty_max - 
                 (self.user_tag_penalty_max - self.user_tag_penalty_min) * 
                 min(user_count / self.user_tag_saturation, 1.0)
             )
-
-            for tag in list(general_tags.keys()):
-                if tag not in remaining_user_tags:
-                    general_tags[tag] = general_tags[tag] * penalty
-
-            for tag in remaining_user_tags:
-                if tag in general_tags:
-                    general_tags[tag] = min(1.0, general_tags[tag] / penalty)
-                    general_tags[tag] = min(1.0, general_tags[tag] + self.user_bonus)
+            
+            # Penalize AI tags not in user tags
+            for tag in list(combined_general.keys()):
+                if tag not in user_tags:
+                    combined_general[tag] = combined_general[tag] * penalty
+            
+            # Boost user tags
+            for tag in user_tags:
+                if tag in combined_general:
+                    # Boost existing AI tag
+                    combined_general[tag] = min(1.0, combined_general[tag] / penalty)
+                    combined_general[tag] = min(1.0, combined_general[tag] + self.user_bonus)
                 else:
-                    general_tags[tag] = 0.95
-
-        character_tags: list[str] = []
-
-        for char in user_characters:
-            if char not in character_tags:
-                character_tags.append(char)
-
-        for char in ai_characters_from_tags:
-            if char not in character_tags:
-                character_tags.append(char)
-
+                    # Add user tag if missing
+                    combined_general[tag] = 0.95
+        
+        # Filter by threshold
+        final_general = {
+            tag: conf
+            for tag, conf in combined_general.items()
+            if conf >= self.threshold
+        }
+        
+        # Extract character tags from AI (just the tags, not entries)
+        ai_character_tags = []
         for char, conf in ai_characters.items():
             if conf >= 0.5:
                 normalized = self._normalize_character_tag(char)
-                if normalized and normalized not in character_tags:
-                    character_tags.append(normalized)
-
-        general_tags = {
-            tag: conf
-            for tag, conf in general_tags.items()
-            if conf >= self.threshold
-        }
-
-        return general_tags, character_tags
+                if normalized and normalized in self._character_tags:
+                    ai_character_tags.append(normalized)
+        
+        return final_general, ai_character_tags
 
     # =========================================================================
     # Filtering
@@ -921,3 +735,105 @@ class TagGenerationStep(PipelineStep):
             return ""
         
         return cleaned
+
+    def _create_character_entries(
+        self,
+        user_tags: set[str],
+        user_characters: list[str],  # Already extracted at CLI
+        ai_character_tags: list[str],
+        context: ImageContext,
+    ) -> tuple[list[str], list[CharacterEntry]]:
+        """
+        Create character entries and final character tag list.
+        
+        This handles:
+        1. Checking for special tags (original/borrowed character)
+        2. Prioritizing user characters over AI characters
+        3. Creating CharacterEntry objects
+        
+        Args:
+            user_tags: All user-provided tags (for checking special tags)
+            user_characters: User-provided character tags (already extracted)
+            ai_character_tags: AI-inferenced character tags
+            context: The image context
+        
+        Returns:
+            Tuple of (final_character_tags, character_entries)
+        """
+        SPECIAL_TAGS = {"original", "borrowed character", "borrowed_character"}
+        has_special_tag = bool(SPECIAL_TAGS & user_tags)
+        
+        final_char_tags: list[str] = []
+        character_entries: list[CharacterEntry] = []
+        char_db = get_character_database()
+        
+        # 1. ALWAYS include user characters if they exist
+        if user_characters:
+            for char in user_characters:
+                if char not in final_char_tags:
+                    final_char_tags.append(char)
+                    # Create entry from database or basic
+                    data = char_db.query(char)
+                    if data:
+                        character_entries.append(
+                            CharacterEntry.from_database(char, data)
+                        )
+                    else:
+                        character_entries.append(
+                            CharacterEntry(
+                                tag=char,
+                                source=CharacterSource.USER_HINTED,
+                            )
+                        )
+            
+            # Don't add AI characters if we have user characters
+            # (user characters take precedence)
+            logger.debug(f"Using {len(user_characters)} user-provided characters")
+            return final_char_tags, character_entries
+        
+        # 2. No user characters - check for special tags
+        if has_special_tag:
+            logger.debug("'original' or 'borrowed character' present - no AI characters will be added")
+            return [], []
+        
+        # 3. No user characters, no special tags - use AI characters
+        for char in ai_character_tags:
+            if char not in final_char_tags:
+                final_char_tags.append(char)
+                data = char_db.query(char)
+                if data:
+                    character_entries.append(
+                        CharacterEntry.from_database(char, data)
+                    )
+                else:
+                    character_entries.append(
+                        CharacterEntry(
+                            tag=char,
+                            source=CharacterSource.EXTRACTED,
+                        )
+                    )
+        
+        if character_entries:
+            logger.debug(f"Added {len(character_entries)} AI-detected characters")
+        
+        return final_char_tags, character_entries
+
+    def _get_user_tags_as_set(self, context: ImageContext) -> set[str]:
+        """
+        Get user-provided tags as a normalized set.
+        
+        Tags are already normalized (underscores) and extracted at CLI,
+        but we need them in a set for processing.
+        """
+        user_tags = set()
+        
+        # Get tags from section 0 and 1 (user hints)
+        for tag in context.get_tags(section=0):
+            if tag:
+                user_tags.add(tag)
+        
+        for tag in context.get_tags(section=1):
+            if tag:
+                user_tags.add(tag)
+        
+        return user_tags
