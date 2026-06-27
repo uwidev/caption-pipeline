@@ -19,7 +19,7 @@ __all__ = [
     "ImageContext",
     "Pipeline",
     "PipelineStep",
-    "ResourceManager",  # ← NEW
+    "ResourceManager",
     "step_help",
     "get_step_help",
     "format_step_help",

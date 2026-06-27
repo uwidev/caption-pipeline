@@ -2,7 +2,7 @@
 FormatJoinStep: Join tag sections into final caption format.
 
 This step is responsible for:
-1. Combining general tags from section 1 with character tags from character_entries
+1. Combining general tags from section 1 with character tags from context.character_tags
 2. Converting tags to use spaces (not underscores) for readability
 3. Joining all sections with the configured delimiter
 4. Saving the final caption to disk
@@ -11,7 +11,7 @@ This step is responsible for:
 from pathlib import Path
 import re
 
-from loguru import logger
+from caption_pipeline.utils.logging_utils import log
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
@@ -62,7 +62,7 @@ def normalize_tag_for_comparison(tag: str) -> str:
     long_description="""This step combines all tag sections into the final caption format.
 
 Key operations:
-1. Adds character tags from character_entries back to section 1 (main tags)
+1. Adds character tags from context.character_tags back to section 1 (main tags)
 2. Converts underscores to spaces for readability
 3. Deduplicates and cleans tags
 4. Joins sections with the configured delimiter
@@ -154,8 +154,8 @@ class FormatJoinStep(PipelineStep):
         # Check if any section has content
         if context.tags[0] or context.tags[1] or context.tags[2]:
             return True
-        # Check if there are character entries
-        if context.character_entries:
+        # Check if there are character tags
+        if context.has_characters():
             return True
         return False
 
@@ -197,7 +197,7 @@ class FormatJoinStep(PipelineStep):
                 seen.add(normalized)
                 result.append(tag)
             else:
-                logger.debug(f"Removed duplicate tag: '{tag}' (normalized: '{normalized}')")
+                log.debug(f"Removed duplicate tag: '{tag}' (normalized: '{normalized}')")
         
         return result
 
@@ -313,7 +313,7 @@ class FormatJoinStep(PipelineStep):
                 del result[tag]
 
         if to_remove and self.resolve_counts:
-            logger.debug(f"Removed {len(to_remove)} duplicate count tags: {', '.join(sorted(to_remove))}")
+            log.debug(f"Removed {len(to_remove)} duplicate count tags: {', '.join(sorted(to_remove))}")
 
         # Return as list (order preserved from input)
         return [tag for tag in tags if tag in result]
@@ -360,7 +360,7 @@ class FormatJoinStep(PipelineStep):
         This checks existing tags (sections 0 and 1) to avoid duplicates.
         Returns a list of tags with spaces (if use_spaces=True) or underscores.
         """
-        if not self.include_character_tags or not context.character_entries:
+        if not self.include_character_tags or not context.has_characters():
             return []
         
         # Get existing tags from section 0 and 1 for duplicate checking
@@ -382,89 +382,88 @@ class FormatJoinStep(PipelineStep):
                 # Use spaces or underscores based on config
                 final_tag = tag_with_spaces if self.use_spaces else tag
                 tags_to_add.append(final_tag)
-                logger.debug(f"Adding character tag: '{tag}' -> '{final_tag}'")
+                log.debug(f"Adding character tag: '{tag}' -> '{final_tag}'")
             else:
-                logger.debug(f"Skipping duplicate character tag: '{tag}' (already exists as '{normalized}')")
+                log.debug(f"Skipping duplicate character tag: '{tag}' (already exists as '{normalized}')")
         
         return tags_to_add
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Join and save the caption."""
-        logger.debug(f"Processing: {context.image_path.name}")
+        with log.section(f"Processing: {context.image_path.name}"):
+            sections = []
 
-        sections = []
-
-        # === SECTION 0: Prepended tags ===
-        if context.tags[0]:
-            if self.clean_tags:
-                cleaned_section = self._clean_and_process_tags(context.tags[0])
+            # === SECTION 0: Prepended tags ===
+            if context.tags[0]:
+                if self.clean_tags:
+                    cleaned_section = self._clean_and_process_tags(context.tags[0])
+                else:
+                    cleaned_section = context.tags[0]
+                # Convert underscores to spaces if requested
+                if self.use_spaces:
+                    cleaned_section = [tag.replace("_", " ") for tag in cleaned_section]
+                sections.append(", ".join(cleaned_section))
             else:
-                cleaned_section = context.tags[0]
+                sections.append("")
+
+            # === SECTION 1: Main tags ===
+            main_tags = context.get_tags(section=1).copy()
+
+            # Add character tags back to main tags (with duplicate detection)
+            character_tags = self._get_character_tags_to_add(context)
+            if character_tags:
+                main_tags.extend(character_tags)
+                log.debug(f"Added {len(character_tags)} character tags: {', '.join(character_tags)}")
+
+            # Clean and process main tags
+            if self.clean_tags:
+                main_tags = self._clean_and_process_tags(main_tags)
+            
+            if self.deduplicate_tags:
+                main_tags = self._deduplicate_tags_preserve_order(main_tags)
+
             # Convert underscores to spaces if requested
             if self.use_spaces:
-                cleaned_section = [tag.replace("_", " ") for tag in cleaned_section]
-            sections.append(", ".join(cleaned_section))
-        else:
-            sections.append("")
+                main_tags = [tag.replace("_", " ") for tag in main_tags]
 
-        # === SECTION 1: Main tags ===
-        main_tags = context.get_tags(section=1).copy()
-
-        # Add character tags back to main tags (with duplicate detection)
-        character_tags = self._get_character_tags_to_add(context)
-        if character_tags:
-            main_tags.extend(character_tags)
-            logger.debug(f"Added {len(character_tags)} character tags: {', '.join(character_tags)}")
-
-        # Clean and process main tags
-        if self.clean_tags:
-            main_tags = self._clean_and_process_tags(main_tags)
-        
-        if self.deduplicate_tags:
-            main_tags = self._deduplicate_tags_preserve_order(main_tags)
-
-        # Convert underscores to spaces if requested
-        if self.use_spaces:
-            main_tags = [tag.replace("_", " ") for tag in main_tags]
-
-        if main_tags:
-            sections.append(", ".join(main_tags))
-        else:
-            sections.append("")
-
-        # === SECTION 2: NL caption ===
-        if context.tags[2]:
-            # Section 2 should be a single string (the NL caption)
-            # But handle multiple entries just in case
-            if len(context.tags[2]) == 1:
-                sections.append(context.tags[2][0])
+            if main_tags:
+                sections.append(", ".join(main_tags))
             else:
-                # Join multiple NL entries with newlines
-                sections.append("\n".join(context.tags[2]))
-        else:
-            sections.append("")
+                sections.append("")
 
-        # Ensure we always have 3 sections
-        while len(sections) < 3:
-            sections.append("")
+            # === SECTION 2: NL caption ===
+            if context.tags[2]:
+                # Section 2 should be a single string (the NL caption)
+                # But handle multiple entries just in case
+                if len(context.tags[2]) == 1:
+                    sections.append(context.tags[2][0])
+                else:
+                    # Join multiple NL entries with newlines
+                    sections.append("\n".join(context.tags[2]))
+            else:
+                sections.append("")
 
-        # If all sections are empty, skip saving (unless save_empty is True)
-        if not any(sections) and not self.save_empty:
-            logger.debug("All sections empty - skipping save")
-            return context
+            # Ensure we always have 3 sections
+            while len(sections) < 3:
+                sections.append("")
 
-        # Join sections with delimiter
-        caption = self.delimiter.join(sections)
+            # If all sections are empty, skip saving (unless save_empty is True)
+            if not any(sections) and not self.save_empty:
+                log.debug("All sections empty - skipping save")
+                return context
 
-        # Save to disk
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+            # Join sections with delimiter
+            caption = self.delimiter.join(sections)
 
-        if self.save_tags:
-            output_path = self.output_dir / f"{context.image_path.stem}{self.tag_suffix}.txt"
-            output_path.write_text(caption)
-            logger.debug(f"Saved caption to {output_path}")
+            # Save to disk
+            self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Store result
-        result = context.copy()
-        result.metadata["caption"] = caption
-        return result
+            if self.save_tags:
+                output_path = self.output_dir / f"{context.image_path.stem}{self.tag_suffix}.txt"
+                output_path.write_text(caption)
+                log.debug(f"Saved caption to {output_path}")
+
+            # Store result
+            result = context.copy()
+            result.metadata["caption"] = caption
+            return result

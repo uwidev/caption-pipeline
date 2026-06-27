@@ -2,42 +2,34 @@
 TagGenerationStep: Generate tags using AI models with user hints.
 """
 
-import ast
 import gc
-import os
 import re
-import time
-from pathlib import Path
 from typing import Any, ClassVar
 
 import torch
-from loguru import logger
 from PIL import Image
 from transformers import PreTrainedTokenizerBase
 
 from caption_pipeline.core.context import ImageContext
-from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.core.help import step_help
-from caption_pipeline.utils.character_extractor import (
-    CharacterEntry,
-    CharacterExtractor,
-    CharacterSource,
-    get_character_database,
+from caption_pipeline.core.step import PipelineStep
+from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.tag_db import (
+    get_character_count_from_tag_confidences,
+    load_tag_databases,
+    resolve_character_tags,
 )
-from caption_pipeline.utils.tag_db import load_tag_databases
 from caption_pipeline.utils.tokenizer import get_tokenizer
-
 
 ALWAYS_BLACKLIST: set[str] = {
     "virtual youtuber",
-    "borrowed character",
     "dual persona",
 }
 
 # Constants (adjustable)
 USER_TAG_PENALTY_MAX = 0.90  # Minimum penalty (least aggressive)
 USER_TAG_PENALTY_MIN = 0.55  # Maximum penalty (most aggressive)
-USER_TAG_SATURATION = 15     # Number of user tags before max penalty is applied
+USER_TAG_SATURATION = 15  # Number of user tags before max penalty is applied
 
 
 @step_help(
@@ -56,7 +48,11 @@ AI-inferenced characters if any user-provided characters exist.""",
         {"flag": "--blacklist TAG,TAG,...", "help": "Tags to always remove"},
         {"flag": "--no-drop-overlap", "help": "Don't remove overlapping tags"},
         {"flag": "--no-infer-characters", "help": "Don't infer character names from AI"},
-        {"flag": "--no-unload-models", "help": "Keep models loaded after batch (faster but uses more VRAM)", "default": "unloaded"},
+        {
+            "flag": "--no-unload-models",
+            "help": "Keep models loaded after batch (faster but uses more VRAM)",
+            "default": "unloaded",
+        },
         {"flag": "--no-use-hints", "help": "Ignore user-provided tags", "default": "use hints"},
     ],
     example="tag:generate --threshold 0.35 --whitelist '1girl, original' --no-infer-characters",
@@ -80,6 +76,7 @@ class TagGenerationStep(PipelineStep):
     def __init__(
         self,
         threshold: float = 0.35,
+        character_threshold: float = 0.75,
         drop_overlap: bool = True,
         whitelist: list[str] | None = None,
         blacklist: list[str] | None = None,
@@ -87,13 +84,14 @@ class TagGenerationStep(PipelineStep):
         use_user_hints: bool = True,
         user_bonus: float = 1.0,
         ai_penalty: float = 0.66,
-        infer_characters: bool = True,
+        infer_characters: bool = False,
         unload_models_after_batch: bool = True,
         user_tag_penalty_min: float = USER_TAG_PENALTY_MIN,
         user_tag_penalty_max: float = USER_TAG_PENALTY_MAX,
         user_tag_saturation: int = USER_TAG_SATURATION,
     ) -> None:
         self.threshold: float = threshold
+        self.character_threshold: float = character_threshold
         self.drop_overlap: bool = drop_overlap
         self.whitelist: set[str] = set(whitelist or [])
         self.blacklist: set[str] = set(blacklist or [])
@@ -106,7 +104,6 @@ class TagGenerationStep(PipelineStep):
         self.user_tag_penalty_min: float = user_tag_penalty_min
         self.user_tag_penalty_max: float = user_tag_penalty_max
         self.user_tag_saturation: int = user_tag_saturation
-        self._character_extractor: CharacterExtractor | None = None
 
     def name(self) -> str:
         return "tag:generate"
@@ -116,51 +113,193 @@ class TagGenerationStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Generate tags for the image."""
-        logger.debug(f"Processing: {context.image_path.name}")
+        with log.section(f"Processing: {context.image_path.name}"):
+            self._load_databases()
+            self._load_models()
 
-        self._load_databases()
-        self._load_models()
+            image: Image.Image = context.load_image()
 
-        image: Image.Image = context.load_image()
+            # Run AI inference
+            ai_tags, ai_rating, ai_characters = self._run_inference(image)
 
-        # Get user tags (already normalized and extracted at CLI)
-        # But we need them as a set for processing
-        user_tags = self._get_user_tags_as_set(context)
-        
-        # Run AI inference
-        ai_tags, ai_rating, ai_characters = self._run_inference(image)
+            user_tags = context.get_tags(0) + context.get_tags(1)
+            user_characters = context.get_character_tags()
+            user_rating = context.rating
 
-        # Combine tags (pure tag combination)
-        combined_general, ai_character_tags = self._combine_tags(
-            user_tags=user_tags,
-            ai_tags=ai_tags,
-            ai_characters=ai_characters,
-        )
+            # Use character_threshold for filtering AI characters
+            accepted_ai_characters = [
+                character
+                for character, score in ai_characters.items()
+                if score > self.character_threshold
+            ]
 
-        # Get user characters (already extracted at CLI)
-        user_characters = context.get_character_tags()
-        
-        # Create character entries (handles special tags, prioritization)
-        character_tags, character_entries = self._create_character_entries(
-            user_tags=user_tags,
-            user_characters=user_characters,
-            ai_character_tags=ai_character_tags,
-            context=context,
-        )
+            # Log user tags at DEBUG level
+            if user_tags:
+                log.debug(f"User tags ({len(user_tags)}):")
+                for i, tag in enumerate(sorted(user_tags)):
+                    log.debug(f"{i + 1:3d}. {tag}")
 
-        # Apply filters
-        final_tags = self._apply_filters(combined_general)
+            # Log user rating at DEBUG level
+            if user_rating:
+                log.debug(f"User rating: {user_rating}")
 
-        # Build result
-        result = context.copy()
-        result.inferenced_tags = ai_tags
-        result.set_tags(list(final_tags), section=1)
-        result.character_entries = character_entries
+            # Log AI inference results at DEBUG level
+            log.debug(f"AI inference results ({len(ai_tags)} total tags):")
+            sorted_ai = sorted(ai_tags.items(), key=lambda x: -x[1])
 
-        if ai_rating or context.rating:
-            result.rating = ai_rating or context.rating
+            # Show ALL tags above threshold
+            above_threshold = [(tag, conf) for tag, conf in sorted_ai if conf >= self.threshold]
+            below_threshold = [(tag, conf) for tag, conf in sorted_ai if conf < self.threshold]
 
-        return result
+            if above_threshold:
+                log.debug(f"Tags above threshold ({len(above_threshold)}):")
+                for i, (tag, conf) in enumerate(above_threshold):
+                    log.debug(f"{i + 1:3d}. {tag}: {conf:.3f}")
+            else:
+                log.debug(f"No tags above threshold ({self.threshold})")
+
+            # Show tags near threshold (within 0.1) + up to 10 more
+            if below_threshold:
+                near_threshold = [
+                    (tag, conf) for tag, conf in below_threshold if conf >= self.threshold - 0.1
+                ]
+                if near_threshold:
+                    log.debug(f"Tags near threshold ({len(near_threshold)}):")
+                    i = len(above_threshold)
+                    for tag, conf in near_threshold[:10]:
+                        log.debug(f"{i + 1:3d}. {tag}: {conf:.3f}")
+                        i += 1
+                    if len(near_threshold) > 10:
+                        log.debug(f"... and {len(near_threshold) - 10} more near threshold")
+                else:
+                    # If no tags near threshold, show the highest below threshold
+                    highest_below = below_threshold[:5]
+                    log.debug("Highest below threshold:")
+                    for tag, conf in highest_below:
+                        log.debug(f"{tag}: {conf:.3f}")
+
+            # Log AI rating at DEBUG level
+            if ai_rating:
+                log.debug(f"AI rating: {ai_rating}")
+
+            # Log ALL AI character results at DEBUG level (no filtering)
+            if ai_characters:
+                log.debug(f"AI-inferenced characters ({len(ai_characters)}):")
+                sorted_chars = sorted(ai_characters.items(), key=lambda x: -x[1])
+                for char, conf in sorted_chars:
+                    marker = "✓" if conf >= self.character_threshold else " "
+                    log.debug(f"{char}: {conf:.3f} {marker}")
+
+            # Combine general tags (using regular threshold)
+            combined_general = self._combine_tags(
+                user_tags=user_tags,
+                ai_tags=ai_tags,
+            )
+
+            expected_count = get_character_count_from_tag_confidences(combined_general)
+
+            # Check if we have enough AI characters (if AI character detection is allowed)
+            if self.infer_characters and expected_count > 0:
+                user_count = len(user_characters)
+                ai_count = len(accepted_ai_characters)
+                total_available = user_count + ai_count
+
+                if total_available < expected_count:
+                    needed = expected_count - total_available
+                    log.warning(
+                        f"Not enough character tags for {context.image_path.name}: "
+                        f"expected {expected_count} characters from count tags, "
+                        f"but only {user_count} user + {ai_count} AI = {total_available} available. "
+                        f"Missing {needed} character(s). Try lowering --character-threshold or adding more character hints."
+                    )
+
+            resolved_characters = resolve_character_tags(
+                user_character_tags=user_characters,
+                ai_character_tags=accepted_ai_characters,
+                count=expected_count,
+                allow_ai=self.infer_characters,
+                all_tags=list(combined_general.keys()),
+                context_name=context.image_path.name,
+                threshold=self.character_threshold,
+            )
+
+            # Apply filters (blacklist/whitelist/danbooru_only)
+            final_tags = self._apply_filters(combined_general)
+
+            # === Show deltas: What changed ===
+            original_tag_count = len(user_tags)
+            final_tag_count = len(final_tags)
+
+            # Tags that were added by AI (in final but not in user hints)
+            user_tag_set = set(user_tags)
+            added_by_ai = [t for t in final_tags if t not in user_tag_set]
+
+            # Tags that were removed (in user hints but not in final)
+            removed = [t for t in user_tags if t not in final_tags]
+
+            # Tags that were kept (in both user hints and final)
+            kept = [t for t in final_tags if t in user_tag_set]
+
+            # Characters added/kept
+            final_char_tags = resolved_characters
+            user_char_set = set(user_characters)
+
+            kept_chars = [c for c in final_char_tags if c in user_char_set]
+            added_chars = [c for c in final_char_tags if c not in user_char_set]
+
+            # Show summary at INFO level
+            log.info(f"{original_tag_count} user tags → {final_tag_count} final tags")
+
+            # Log rating delta if applicable
+            if user_rating and ai_rating:
+                if user_rating == ai_rating:
+                    log.info(f"Rating: {user_rating} (user and AI match)")
+                else:
+                    log.info(f"Rating: {user_rating} (user) vs {ai_rating} (AI) - using user rating")
+            elif user_rating:
+                log.info(f"Rating: {user_rating} (user provided)")
+            elif ai_rating:
+                log.info(f"Rating: {ai_rating} (AI inferred)")
+
+            if kept:
+                log.info(f"Kept: {len(kept)} tags")
+                log.debug(f"{', '.join(kept[:10])}{'...' if len(kept) > 10 else ''}")
+
+            if added_by_ai:
+                log.info(f"Added by AI: {len(added_by_ai)} tags")
+                log.debug(f"{', '.join(added_by_ai[:10])}{'...' if len(added_by_ai) > 10 else ''}")
+
+            if removed:
+                log.info(f"Removed: {len(removed)} tags (below threshold or blacklisted)")
+                log.debug(f"{', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
+
+            if kept_chars:
+                log.info(f"Characters kept: {', '.join(kept_chars)}")
+
+            if added_chars:
+                log.info(f"Characters added: {', '.join(added_chars)}")
+
+            # Show final tags at DEBUG level
+            if final_tags:
+                log.debug(f"Final tags ({len(final_tags)}):")
+                for i, tag in enumerate(final_tags):
+                    log.debug(f"{i + 1:>3d}. {tag}")
+
+            # Build result
+            result = context.copy()
+            result.inferenced_tags = ai_tags
+            result.set_tags(list(final_tags), section=1)
+            result.set_characters(resolved_characters)
+
+            # Determine final rating: user rating takes precedence
+            if user_rating:
+                result.rating = user_rating
+            elif ai_rating:
+                result.rating = ai_rating
+            else:
+                result.rating = None
+
+            return result
 
     def process_batch(self, contexts: list[ImageContext]) -> list[ImageContext]:
         """Process multiple contexts with models loaded once."""
@@ -177,7 +316,7 @@ class TagGenerationStep(PipelineStep):
                     context.load_image()
                     valid_indices.append(idx)
                 except Exception as e:
-                    logger.error(f"Failed to load image {context.image_path.name}: {e}")
+                    log.error(f"Failed to load image {context.image_path.name}: {e}")
 
         if not valid_indices:
             return contexts
@@ -193,7 +332,7 @@ class TagGenerationStep(PipelineStep):
                 else:
                     results.append((idx, context))
             except Exception as e:
-                logger.error(f"Failed to process {context.image_path.name}: {e}")
+                log.error(f"Failed to process {context.image_path.name}: {e}")
                 results.append((idx, context))
 
         results.sort(key=lambda x: x[0])
@@ -216,13 +355,13 @@ class TagGenerationStep(PipelineStep):
         if cls._models_loaded:
             return
 
-        logger.info("Loading tag generation models...")
+        log.info("Loading tag generation models...")
 
         try:
             # This import triggers model loading
-            from imgutils.tagging import wd14, pixai
             from imgutils.generic.classify import ClassifyModel
             from imgutils.generic.yolo import YOLOModel
+            from imgutils.tagging import pixai, wd14
 
             # Force model loading by creating dummy prediction
             wd_model = ClassifyModel("wd14")
@@ -250,10 +389,10 @@ class TagGenerationStep(PipelineStep):
             )
 
             cls._models_loaded = True
-            logger.info("Tag generation models loaded")
+            log.info("Tag generation models loaded")
 
         except Exception as e:
-            logger.warning(f"Failed to load models: {e}")
+            log.warning(f"Failed to load models: {e}")
             # Mark as loaded anyway to prevent repeated attempts
             cls._models_loaded = True
 
@@ -263,16 +402,16 @@ class TagGenerationStep(PipelineStep):
         if not cls._models_loaded:
             return
 
-        logger.info("Unloading tag generation models...")
+        log.info("Unloading tag generation models...")
 
         try:
             # 1. Clear model instances from our internal cache
             for model_name, model_instance in cls._model_instances.items():
-                if hasattr(model_instance, 'clear'):
+                if hasattr(model_instance, "clear"):
                     try:
                         model_instance.clear()
                     except Exception as e:
-                        logger.warning(f"Failed to clear {model_name}: {e}")
+                        log.warning(f"Failed to clear {model_name}: {e}")
 
             # 2. Clear all imgutils model caches
             cls._clear_imgutils_caches()
@@ -284,23 +423,25 @@ class TagGenerationStep(PipelineStep):
             if torch.cuda.is_available():
                 # Synchronize first
                 torch.cuda.synchronize()
-                
+
                 # Empty cache
                 torch.cuda.empty_cache()
-                
+
                 # Reset peak memory stats
                 try:
                     torch.cuda.reset_peak_memory_stats()
                 except Exception:
                     pass
-                
+
                 # Log memory state at DEBUG level
                 allocated = torch.cuda.memory_allocated() / 1024 / 1024
                 cached = torch.cuda.memory_reserved() / 1024 / 1024
                 if allocated > 0 or cached > 0:
-                    logger.debug(f"CUDA memory after cleanup: {allocated:.2f}MB allocated, {cached:.2f}MB cached")
+                    log.debug(
+                        f"CUDA memory after cleanup: {allocated:.2f}MB allocated, {cached:.2f}MB cached"
+                    )
                 else:
-                    logger.debug("CUDA memory fully released")
+                    log.debug("CUDA memory fully released")
 
                 # Force another GC pass after CUDA cleanup
                 gc.collect()
@@ -309,39 +450,39 @@ class TagGenerationStep(PipelineStep):
             cls._model_instances.clear()
             cls._models_loaded = False
 
-            logger.info("Tag generation models unloaded")
+            log.info("Tag generation models unloaded")
 
         except Exception as e:
-            logger.warning(f"Failed to unload models: {e}")
+            log.warning(f"Failed to unload models: {e}")
             cls._models_loaded = False
 
     @classmethod
     def _clear_imgutils_caches(cls) -> None:
         """Clear all imgutils cached functions."""
-        import sys
         import inspect
+        import sys
 
         cleared = 0
 
         # Functions that we know are cached and used by our models
         known_cached_funcs = [
             # WD14
-            ('imgutils.tagging.wd14', '_get_wd14_model'),
-            ('imgutils.tagging.wd14', '_get_wd14_weights'),
-            ('imgutils.tagging.wd14', '_get_wd14_labels'),
+            ("imgutils.tagging.wd14", "_get_wd14_model"),
+            ("imgutils.tagging.wd14", "_get_wd14_weights"),
+            ("imgutils.tagging.wd14", "_get_wd14_labels"),
             # PixAI
-            ('imgutils.tagging.pixai', '_open_onnx_model'),
-            ('imgutils.tagging.pixai', '_open_tags'),
-            ('imgutils.tagging.pixai', '_open_preprocess'),
-            ('imgutils.tagging.pixai', '_open_default_category_thresholds'),
+            ("imgutils.tagging.pixai", "_open_onnx_model"),
+            ("imgutils.tagging.pixai", "_open_tags"),
+            ("imgutils.tagging.pixai", "_open_preprocess"),
+            ("imgutils.tagging.pixai", "_open_default_category_thresholds"),
             # YOLO
-            ('imgutils.generic.yolo', '_open_models_for_repo_id'),
+            ("imgutils.generic.yolo", "_open_models_for_repo_id"),
             # Classify
-            ('imgutils.generic.classify', '_open_models_for_repo_id'),
+            ("imgutils.generic.classify", "_open_models_for_repo_id"),
             # Booru YOLO
-            ('imgutils.detect.booru_yolo', '_open_models_for_repo_id'),
+            ("imgutils.detect.booru_yolo", "_open_models_for_repo_id"),
             # Person detect
-            ('imgutils.detect.person', '_open_models_for_repo_id'),
+            ("imgutils.detect.person", "_open_models_for_repo_id"),
         ]
 
         for module_name, func_name in known_cached_funcs:
@@ -349,11 +490,11 @@ class TagGenerationStep(PipelineStep):
                 # Import the module
                 __import__(module_name)
                 module = sys.modules[module_name]
-                
+
                 # Get the function
                 if hasattr(module, func_name):
                     func = getattr(module, func_name)
-                    if hasattr(func, 'cache_clear') and callable(func.cache_clear):
+                    if hasattr(func, "cache_clear") and callable(func.cache_clear):
                         func.cache_clear()
                         cleared += 1
             except Exception:
@@ -361,22 +502,22 @@ class TagGenerationStep(PipelineStep):
 
         # Also try to find any other cached functions in imgutils modules
         for module_name, module in list(sys.modules.items()):
-            if not module_name.startswith('imgutils'):
+            if not module_name.startswith("imgutils"):
                 continue
 
             for name, obj in inspect.getmembers(module):
                 # Check if this is a cached function
-                if hasattr(obj, 'cache_clear') and callable(obj.cache_clear):
+                if hasattr(obj, "cache_clear") and callable(obj.cache_clear):
                     try:
                         # Check if it was decorated with ts_lru_cache
                         # The decorator adds a __wrapped__ attribute
-                        if hasattr(obj, '__wrapped__'):
+                        if hasattr(obj, "__wrapped__"):
                             obj.cache_clear()
                             cleared += 1
                     except Exception:
                         pass
 
-        logger.debug(f"Cleared {cleared} imgutils caches")
+        log.debug(f"Cleared {cleared} imgutils caches")
 
     # =========================================================================
     # Database Loading
@@ -396,67 +537,10 @@ class TagGenerationStep(PipelineStep):
         if cls._tokenizer is None:
             cls._tokenizer = get_tokenizer()
 
-        logger.debug(
+        log.debug(
             f"Loaded {len(cls._general_tags)} general tags and "
             f"{len(cls._character_tags)} character tags"
         )
-
-    # =========================================================================
-    # Tag Extraction
-    # =========================================================================
-
-    def _extract_user_tags(self, context: ImageContext) -> set[str]:
-        user_tags: set[str] = set()
-
-        if not self.use_user_hints:
-            return user_tags
-
-        for tag in context.get_tags(section=1):
-            if ',' in tag:
-                parts = [p.strip() for p in tag.split(',') if p.strip()]
-                for part in parts:
-                    cleaned = self._clean_tag(part)
-                    if cleaned:
-                        user_tags.add(cleaned)
-            else:
-                cleaned = self._clean_tag(tag)
-                if cleaned:
-                    user_tags.add(cleaned)
-
-        for tag in context.get_tags(section=0):
-            if ',' in tag:
-                parts = [p.strip() for p in tag.split(',') if p.strip()]
-                for part in parts:
-                    cleaned = self._clean_tag(part)
-                    if cleaned:
-                        user_tags.add(cleaned)
-            else:
-                cleaned = self._clean_tag(tag)
-                if cleaned:
-                    user_tags.add(cleaned)
-
-        return user_tags
-
-    def _get_character_extractor(self) -> CharacterExtractor:
-        if self._character_extractor is None:
-            self._character_extractor = CharacterExtractor()
-        return self._character_extractor
-
-    # =========================================================================
-    # Character Tag Normalization
-    # =========================================================================
-
-    def _normalize_character_tag(self, tag: str) -> str:
-        if not tag:
-            return ""
-
-        if tag.startswith("character:"):
-            tag = tag[10:]
-
-        tag = tag.lower()
-        tag = tag.replace(" ", "_")
-
-        return tag.strip("_ ")
 
     # =========================================================================
     # AI Inference
@@ -466,7 +550,7 @@ class TagGenerationStep(PipelineStep):
         self,
         image: Image.Image,
     ) -> tuple[dict[str, float], str | None, dict[str, float]]:
-        from imgutils.tagging import wd14, pixai
+        from imgutils.tagging import pixai, wd14
 
         low_threshold = 0.01
 
@@ -492,8 +576,8 @@ class TagGenerationStep(PipelineStep):
                     best_rating = r
                     best_conf = conf
             rating = best_rating
-            
-            logger.debug(f"Extracted rating: {rating} (from {wd_ratings})")
+
+            # log.debug(f"Extracted rating: {rating} (from {wd_ratings})")
 
         pixai_general: dict[str, float]
         pixai_characters: dict[str, float]
@@ -506,12 +590,8 @@ class TagGenerationStep(PipelineStep):
             },
         )
 
-        pixai_general = {
-            self._normalize_tag(k): v for k, v in pixai_general.items()
-        }
-        pixai_characters = {
-            self._normalize_tag(k): v for k, v in pixai_characters.items()
-        }
+        pixai_general = {self._normalize_tag(k): v for k, v in pixai_general.items()}
+        pixai_characters = {self._normalize_tag(k): v for k, v in pixai_characters.items()}
 
         combined: dict[str, float] = {}
         for tag, conf in wd_general.items():
@@ -538,50 +618,39 @@ class TagGenerationStep(PipelineStep):
 
     def _combine_tags(
         self,
-        user_tags: set[str],
+        user_tags: list[str],
         ai_tags: dict[str, float],
-        ai_characters: dict[str, float],
-    ) -> tuple[dict[str, float], list[str]]:
+    ) -> dict[str, float]:
         """
-        Combine user tags and AI tags into a single set.
-        
-        This method ONLY deals with combining tags. It does NOT:
-        - Normalize character tags (should be done upstream)
-        - Check for special tags (should be done upstream)
-        - Handle character entries (should be done upstream)
-        
+        Combine user tags and AI tags into a single set above threshold.
+
         Args:
             user_tags: User-provided tags (already normalized)
             ai_tags: AI-inferenced general tags
-            ai_characters: AI-inferenced character tags (tag -> confidence)
-        
+
         Returns:
-            Tuple of (combined_general_tags, character_tags_from_ai)
+            Tuple of combined_general_tags
         """
-        # Start with AI general tags
         combined_general: dict[str, float] = {}
+
+        # Start with AI general tags
         for tag, conf in ai_tags.items():
-            # Skip if this is a character tag (they're handled separately)
-            if tag in self._character_tags:
-                continue
             combined_general[tag] = conf
-        
+
         # Apply user tag penalty/boost
         if user_tags:
             user_count = len(user_tags)
-            
+
             # Calculate penalty based on user tag count
-            penalty = (
-                self.user_tag_penalty_max - 
-                (self.user_tag_penalty_max - self.user_tag_penalty_min) * 
-                min(user_count / self.user_tag_saturation, 1.0)
-            )
-            
+            penalty = self.user_tag_penalty_max - (
+                self.user_tag_penalty_max - self.user_tag_penalty_min
+            ) * min(user_count / self.user_tag_saturation, 1.0)
+
             # Penalize AI tags not in user tags
             for tag in list(combined_general.keys()):
                 if tag not in user_tags:
                     combined_general[tag] = combined_general[tag] * penalty
-            
+
             # Boost user tags
             for tag in user_tags:
                 if tag in combined_general:
@@ -591,29 +660,20 @@ class TagGenerationStep(PipelineStep):
                 else:
                     # Add user tag if missing
                     combined_general[tag] = 0.95
-        
+
         # Filter by threshold
         final_general = {
-            tag: conf
-            for tag, conf in combined_general.items()
-            if conf >= self.threshold
+            tag: conf for tag, conf in combined_general.items() if conf >= self.threshold
         }
-        
-        # Extract character tags from AI (just the tags, not entries)
-        ai_character_tags = []
-        for char, conf in ai_characters.items():
-            if conf >= 0.5:
-                normalized = self._normalize_character_tag(char)
-                if normalized and normalized in self._character_tags:
-                    ai_character_tags.append(normalized)
-        
-        return final_general, ai_character_tags
+
+        return final_general
 
     # =========================================================================
     # Filtering
     # =========================================================================
 
     def _apply_filters(self, tags: dict[str, float]) -> list[str]:
+        """Filter against blacklist or non-danbooru tags."""
         result: list[str] = []
 
         for tag, conf in tags.items():
@@ -634,115 +694,13 @@ class TagGenerationStep(PipelineStep):
     def _clean_tag(self, tag: str) -> str:
         if not tag:
             return ""
-        
+
         cleaned = tag.strip()
-        cleaned = ' '.join(cleaned.split())
-        cleaned = re.sub(r'\s+', ' ', cleaned)
-        cleaned = cleaned.strip('.,;:!?"\'')
-        
+        cleaned = " ".join(cleaned.split())
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = cleaned.strip(".,;:!?\"'")
+
         if not cleaned:
             return ""
-        
+
         return cleaned
-
-    def _create_character_entries(
-        self,
-        user_tags: set[str],
-        user_characters: list[str],  # Already extracted at CLI
-        ai_character_tags: list[str],
-        context: ImageContext,
-    ) -> tuple[list[str], list[CharacterEntry]]:
-        """
-        Create character entries and final character tag list.
-        
-        This handles:
-        1. Checking for special tags (original/borrowed character)
-        2. Prioritizing user characters over AI characters
-        3. Creating CharacterEntry objects
-        
-        Args:
-            user_tags: All user-provided tags (for checking special tags)
-            user_characters: User-provided character tags (already extracted)
-            ai_character_tags: AI-inferenced character tags
-            context: The image context
-        
-        Returns:
-            Tuple of (final_character_tags, character_entries)
-        """
-        SPECIAL_TAGS = {"original", "borrowed character", "borrowed_character"}
-        has_special_tag = bool(SPECIAL_TAGS & user_tags)
-        
-        final_char_tags: list[str] = []
-        character_entries: list[CharacterEntry] = []
-        char_db = get_character_database()
-        
-        # 1. ALWAYS include user characters if they exist
-        if user_characters:
-            for char in user_characters:
-                if char not in final_char_tags:
-                    final_char_tags.append(char)
-                    # Create entry from database or basic
-                    data = char_db.query(char)
-                    if data:
-                        character_entries.append(
-                            CharacterEntry.from_database(char, data)
-                        )
-                    else:
-                        character_entries.append(
-                            CharacterEntry(
-                                tag=char,
-                                source=CharacterSource.USER_HINTED,
-                            )
-                        )
-            
-            # Don't add AI characters if we have user characters
-            # (user characters take precedence)
-            logger.debug(f"Using {len(user_characters)} user-provided characters")
-            return final_char_tags, character_entries
-        
-        # 2. No user characters - check for special tags
-        if has_special_tag:
-            logger.debug("'original' or 'borrowed character' present - no AI characters will be added")
-            return [], []
-        
-        # 3. No user characters, no special tags - use AI characters
-        for char in ai_character_tags:
-            if char not in final_char_tags:
-                final_char_tags.append(char)
-                data = char_db.query(char)
-                if data:
-                    character_entries.append(
-                        CharacterEntry.from_database(char, data)
-                    )
-                else:
-                    character_entries.append(
-                        CharacterEntry(
-                            tag=char,
-                            source=CharacterSource.EXTRACTED,
-                        )
-                    )
-        
-        if character_entries:
-            logger.debug(f"Added {len(character_entries)} AI-detected characters")
-        
-        return final_char_tags, character_entries
-
-    def _get_user_tags_as_set(self, context: ImageContext) -> set[str]:
-        """
-        Get user-provided tags as a normalized set.
-        
-        Tags are already normalized (underscores) and extracted at CLI,
-        but we need them in a set for processing.
-        """
-        user_tags = set()
-        
-        # Get tags from section 0 and 1 (user hints)
-        for tag in context.get_tags(section=0):
-            if tag:
-                user_tags.add(tag)
-        
-        for tag in context.get_tags(section=1):
-            if tag:
-                user_tags.add(tag)
-        
-        return user_tags

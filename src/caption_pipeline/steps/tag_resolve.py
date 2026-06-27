@@ -4,11 +4,10 @@ TagResolveStep: Manage CLIP token limits.
 
 from math import ceil
 
-from loguru import logger
-
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
+from caption_pipeline.utils.logging_utils import log
 from caption_pipeline.utils.tokenizer import get_tokenizer
 
 
@@ -91,96 +90,93 @@ class TagResolveStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Resolve tags to fit within CLIP limits."""
-        logger.debug(f"Processing: {context.image_path.name}")
-
-        tags = context.get_tags(section=1)
-        if not tags:
-            return context
-
-        # Store context for _resolve_add
-        self._context = context
-
-        # Lazy load tokenizer
-        if self._tokenizer is None:
-            self._tokenizer = get_tokenizer()
-
-        # Calculate current token usage
-        current_tokens = self._count_tokens(tags)
-        current_windows = self._get_window_count(tags)
-        current_padding = self._get_padding(tags)
-
-        logger.debug(
-            f"Token usage: {current_tokens} tokens, {current_windows} windows, "
-            f"padding: {current_padding}, force_windows: {self.force_windows}"
-        )
-
-        original_count = len(tags)
-        original_tokens = current_tokens
-
-        # If force_windows is set, we need to add or drop to hit exactly that many windows
-        if self.force_windows > 0:
-            logger.info(f"Forcing exactly {self.force_windows} CLIP windows")
-            resolved = self._resolve_force_windows(tags)
-        else:
-            # Normal resolution logic
-            need_resolve = (
-                (self.max_windows and current_windows > self.max_windows)
-                or (current_padding > self.max_padding and current_tokens > self.window_size)
-            )
-
-            # For add mode, always try to add if we can
-            if self.mode == "add" and not need_resolve:
-                if current_padding > 0 and current_tokens < self.window_size:
-                    need_resolve = True
-                    logger.debug("Add mode: attempting to add tags despite no immediate need")
-
-            if not need_resolve and self.mode != "add":
-                logger.debug("No resolution needed")
+        with log.section(f"Processing: {context.image_path.name}"):
+            tags = context.get_tags(section=1)
+            if not tags:
                 return context
 
-            # Resolve based on mode
-            if self.mode == "drop":
-                resolved = self._resolve_drop(tags)
-            elif self.mode == "add":
-                resolved = self._resolve_add(tags)
-            else:  # smart
-                resolved = self._resolve_smart(tags)
+            # Store context for _resolve_add
+            self._context = context
 
-        # Store resolved tags
-        result = context.copy()
-        result.set_tags(resolved, section=1)
+            # Lazy load tokenizer
+            if self._tokenizer is None:
+                self._tokenizer = get_tokenizer()
 
-        final_tokens = self._count_tokens(resolved)
-        final_windows = self._get_window_count(resolved)
-        final_padding = self._get_padding(resolved)
-        final_count = len(resolved)
+            # Calculate current token usage
+            current_tokens = self._count_tokens(tags)
+            current_windows = self._get_window_count(tags)
+            current_padding = self._get_padding(tags)
 
-        # === Show deltas ===
-        added = [t for t in resolved if t not in tags]
-        removed = [t for t in tags if t not in resolved]
-        
-        logger.info(
-            f"Tag resolution for {context.image_path.name}: "
-            f"{original_count} tags ({original_tokens} tokens) → {final_count} tags ({final_tokens} tokens)"
-        )
-        
-        if removed:
-            logger.info(f"  Removed: {len(removed)} tags")
-            logger.debug(f"    {', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
-        
-        if added:
-            logger.info(f"  Added: {len(added)} tags")
-            logger.debug(f"    {', '.join(added[:10])}{'...' if len(added) > 10 else ''}")
-        
-        if not removed and not added:
-            logger.info("  No changes needed")
-        
-        logger.debug(
-            f"Resolved to {final_tokens} tokens, {final_windows} windows, "
-            f"padding: {final_padding}"
-        )
-        
-        return result
+            log.debug(
+                f"Token usage: {current_tokens} tokens, {current_windows} windows, "
+                f"padding: {current_padding}, force_windows: {self.force_windows}"
+            )
+
+            original_count = len(tags)
+            original_tokens = current_tokens
+
+            # If force_windows is set, we need to add or drop to hit exactly that many windows
+            if self.force_windows > 0:
+                log.info(f"Forcing exactly {self.force_windows} CLIP windows")
+                resolved = self._resolve_force_windows(tags)
+            else:
+                # Normal resolution logic
+                need_resolve = (self.max_windows and current_windows > self.max_windows) or (
+                    current_padding > self.max_padding and current_tokens > self.window_size
+                )
+
+                # For add mode, always try to add if we can
+                if self.mode == "add" and not need_resolve:
+                    if current_padding > 0 and current_tokens < self.window_size:
+                        need_resolve = True
+                        log.debug("Add mode: attempting to add tags despite no immediate need")
+
+                if not need_resolve and self.mode != "add":
+                    log.debug("No resolution needed")
+                    return context
+
+                # Resolve based on mode
+                if self.mode == "drop":
+                    resolved = self._resolve_drop(tags)
+                elif self.mode == "add":
+                    resolved = self._resolve_add(tags)
+                else:  # smart
+                    resolved = self._resolve_smart(tags)
+
+            # Store resolved tags
+            result = context.copy()
+            result.set_tags(resolved, section=1)
+
+            final_tokens = self._count_tokens(resolved)
+            final_windows = self._get_window_count(resolved)
+            final_padding = self._get_padding(resolved)
+            final_count = len(resolved)
+
+            # === Show deltas ===
+            added = [t for t in resolved if t not in tags]
+            removed = [t for t in tags if t not in resolved]
+
+            log.info(
+                f"Tag resolution for {context.image_path.name}: "
+                f"{original_count} tags ({original_tokens} tokens) → {final_count} tags ({final_tokens} tokens)"
+            )
+
+            if removed:
+                log.info(f"Removed: {len(removed)} tags")
+                log.debug(f"  {', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
+
+            if added:
+                log.info(f"Added: {len(added)} tags")
+                log.debug(f"  {', '.join(added[:10])}{'...' if len(added) > 10 else ''}")
+
+            if not removed and not added:
+                log.info("No changes needed")
+
+            log.debug(
+                f"Resolved to {final_tokens} tokens, {final_windows} windows, padding: {final_padding}"
+            )
+
+            return result
 
     def _resolve_force_windows(self, tags: list[str]) -> list[str]:
         """
@@ -195,7 +191,7 @@ class TagResolveStep(PipelineStep):
 
         current_tokens = self._count_tokens(tags)
 
-        logger.debug(
+        log.debug(
             f"Force windows: target {target_windows} windows "
             f"({target_tokens_min}-{target_tokens_max} tokens), "
             f"current: {current_tokens} tokens"
@@ -203,16 +199,16 @@ class TagResolveStep(PipelineStep):
 
         # If we need to drop (too many tokens)
         if current_tokens > target_tokens_max:
-            logger.debug(f"Dropping tags from {current_tokens} to <= {target_tokens_max} tokens")
+            log.debug(f"Dropping tags from {current_tokens} to <= {target_tokens_max} tokens")
             return self._resolve_drop_to_target(tags, target_tokens_max)
 
         # If we need to add (too few tokens)
         if current_tokens < target_tokens_min:
-            logger.debug(f"Adding tags from {current_tokens} to {target_tokens_min} tokens")
+            log.debug(f"Adding tags from {current_tokens} to {target_tokens_min} tokens")
             return self._resolve_add_to_target(tags, target_tokens_min)
 
         # Already in range
-        logger.debug("Already within target range")
+        log.debug("Already within target range")
         return tags
 
     def _resolve_drop_to_target(self, tags: list[str], target_tokens: int) -> list[str]:
@@ -232,21 +228,21 @@ class TagResolveStep(PipelineStep):
         # Get inferenced tags (from context or inference)
         inferenced_tags = self._get_inferenced_tags()
         if not inferenced_tags:
-            logger.debug("No inferenced tags available to add")
+            log.debug("No inferenced tags available to add")
             return tags
 
         # Sort ALL tags by confidence descending (no threshold filter!)
         sorted_tags = sorted(inferenced_tags.items(), key=lambda x: -x[1])
-        
+
         # Filter out tags already in the main list
         tags_set = set(tags)
         available = [(tag, conf) for tag, conf in sorted_tags if tag not in tags_set]
-        
+
         if not available:
-            logger.debug("All inferenced tags already in main list")
+            log.debug("All inferenced tags already in main list")
             return tags
 
-        logger.debug(
+        log.debug(
             f"Adding tags from {len(available)} available tags "
             f"(highest conf: {available[0][1]:.3f}, lowest: {available[-1][1]:.3f})"
         )
@@ -254,22 +250,22 @@ class TagResolveStep(PipelineStep):
         result = tags.copy()
         added = 0
         current_tokens = self._count_tokens(result)
-        
+
         for tag, conf in available:
             result.append(tag)
             added += 1
             current_tokens = self._count_tokens(result)
-            
+
             # Check if we've reached the target after each addition
             if current_tokens >= target_tokens:
-                logger.debug(
+                log.debug(
                     f"Reached target {target_tokens} tokens at {current_tokens} "
                     f"({added} tags added, lowest added conf: {conf:.3f})"
                 )
                 break
 
         if added > 0:
-            logger.debug(
+            log.debug(
                 f"Added {added} tags from inferenced pool "
                 f"({len(available)} available), final: {current_tokens} tokens"
             )
@@ -316,11 +312,11 @@ class TagResolveStep(PipelineStep):
 
         # Check if inferenced tags exist in context
         if self._context.inferenced_tags is not None:
-            logger.debug(f"Using {len(self._context.inferenced_tags)} inferenced tags from context")
+            log.debug(f"Using {len(self._context.inferenced_tags)} inferenced tags from context")
             return self._context.inferenced_tags
 
         # If no inferenced tags, run inference
-        logger.debug("No inferenced tags found in context - running inference to gather them")
+        log.debug("No inferenced tags found in context - running inference to gather them")
         return self._run_inference_for_tags()
 
     def _run_inference_for_tags(self) -> dict[str, float]:
@@ -333,7 +329,7 @@ class TagResolveStep(PipelineStep):
             return {}
 
         try:
-            from imgutils.tagging import wd14, pixai, overlap
+            from imgutils.tagging import overlap, pixai, wd14
 
             image = self._context.load_image()
 
@@ -376,12 +372,14 @@ class TagResolveStep(PipelineStep):
             # Store in context for future use
             self._context.inferenced_tags = combined
 
-            logger.debug(f"Gathered {len(combined)} tags from inference (threshold: {low_threshold:.2f})")
+            log.debug(
+                f"Gathered {len(combined)} tags from inference (threshold: {low_threshold:.2f})"
+            )
 
             return combined
 
         except Exception as e:
-            logger.error(f"Failed to run inference for tags: {e}")
+            log.error(f"Failed to run inference for tags: {e}")
             return {}
 
     def _get_tags_above_threshold(
@@ -425,18 +423,18 @@ class TagResolveStep(PipelineStep):
         # Get inferenced tags (from context or inference)
         inferenced_tags = self._get_inferenced_tags()
         if not inferenced_tags:
-            logger.debug("No inferenced tags available to add")
+            log.debug("No inferenced tags available to add")
             return tags
 
         # Sort ALL tags by confidence descending (no threshold filter!)
         sorted_tags = sorted(inferenced_tags.items(), key=lambda x: -x[1])
-        
+
         # Filter out tags already in the main list
         tags_set = set(tags)
         available = [(tag, conf) for tag, conf in sorted_tags if tag not in tags_set]
 
         if not available:
-            logger.debug("All inferenced tags already in main list")
+            log.debug("All inferenced tags already in main list")
             return tags
 
         result = tags.copy()
@@ -450,10 +448,7 @@ class TagResolveStep(PipelineStep):
                 break
 
         if added > 0:
-            logger.debug(
-                f"Added {added} tags from inferenced pool "
-                f"({len(available)} available)"
-            )
+            log.debug(f"Added {added} tags from inferenced pool ({len(available)} available)")
 
         return result
 

@@ -8,7 +8,6 @@ import gc
 import torch
 from typing import Any
 
-from loguru import logger
 from PIL import Image
 
 from caption_pipeline.core.resource_manager import ResourceManager
@@ -43,10 +42,10 @@ class ModelManager(ResourceManager):
     def start(self) -> bool:
         """Load the tag generation models."""
         if self._ready:
-            logger.debug("Models already loaded")
+            log.debug("Models already loaded")
             return True
         
-        logger.info("Loading tag generation models...")
+        log.info("Loading tag generation models...")
         
         try:
             from imgutils.tagging import wd14, pixai
@@ -80,25 +79,25 @@ class ModelManager(ResourceManager):
             
             self._ready = True
             self._started_by_us = True
-            logger.info("Tag generation models loaded")
+            log.info("Tag generation models loaded")
             return True
             
         except Exception as e:
-            logger.warning(f"Failed to load models: {e}")
+            log.warning(f"Failed to load models: {e}")
             return False
     
     def stop(self) -> bool:
         """Unload the tag generation models."""
         if not self._started_by_us:
-            logger.debug("Models not loaded by us - leaving as-is")
+            log.debug("Models not loaded by us - leaving as-is")
             return True
         
         if not self._ready:
-            logger.debug("Models already unloaded")
+            log.debug("Models already unloaded")
             self._started_by_us = False
             return True
         
-        logger.debug("Unloading tag generation models...")
+        log.debug("Unloading tag generation models...")
         
         try:
             # 1. Clear model instances from our internal cache
@@ -106,51 +105,51 @@ class ModelManager(ResourceManager):
                 if hasattr(model_instance, 'clear'):
                     try:
                         model_instance.clear()
-                        logger.debug(f"Cleared {model_name} model instance")
+                        log.debug(f"Cleared {model_name} model instance")
                     except Exception as e:
-                        logger.warning(f"Failed to clear {model_name}: {e}")
+                        log.warning(f"Failed to clear {model_name}: {e}")
             
             # 2. Clear function-level caches (WD14 and PixAI)
             self._clear_function_caches()
             
             # 3. Force garbage collection
             gc.collect()
-            logger.debug("Garbage collection completed")
+            log.debug("Garbage collection completed")
             
             # 4. Clear CUDA cache if available
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-                logger.debug("CUDA synchronized")
+                log.debug("CUDA synchronized")
                 
                 torch.cuda.empty_cache()
-                logger.debug("CUDA cache emptied")
+                log.debug("CUDA cache emptied")
                 
                 try:
                     torch.cuda.reset_peak_memory_stats()
-                    logger.debug("CUDA peak memory stats reset")
+                    log.debug("CUDA peak memory stats reset")
                 except Exception:
                     pass
                 
                 allocated = torch.cuda.memory_allocated() / 1024 / 1024
                 cached = torch.cuda.memory_reserved() / 1024 / 1024
                 if allocated > 0 or cached > 0:
-                    logger.debug(f"CUDA memory after cleanup: {allocated:.2f}MB allocated, {cached:.2f}MB cached")
+                    log.debug(f"CUDA memory after cleanup: {allocated:.2f}MB allocated, {cached:.2f}MB cached")
                 else:
-                    logger.debug("CUDA memory fully released")
+                    log.debug("CUDA memory fully released")
                 
                 gc.collect()
-                logger.debug("Post-CUDA garbage collection completed")
+                log.debug("Post-CUDA garbage collection completed")
             
             # 5. Clear internal state
             self._model_instances.clear()
             self._ready = False
             self._started_by_us = False
             
-            logger.debug("Tag generation models unloaded")
+            log.debug("Tag generation models unloaded")
             return True
             
         except Exception as e:
-            logger.warning(f"Failed to unload models: {e}")
+            log.warning(f"Failed to unload models: {e}")
             self._ready = False
             self._started_by_us = False
             return False
@@ -207,9 +206,9 @@ class ModelManager(ResourceManager):
                     if hasattr(func, 'cache_clear') and callable(func.cache_clear):
                         func.cache_clear()
                         cleared += 1
-                        logger.debug(f"Cleared cache for {module_name}.{func_name}")
+                        log.debug(f"Cleared cache for {module_name}.{func_name}")
             except Exception as e:
                 errors += 1
-                logger.debug(f"Could not clear {module_name}.{func_name}: {e}")
+                log.debug(f"Could not clear {module_name}.{func_name}: {e}")
         
-        logger.debug(f"Cleared {cleared} imgutils function-level caches ({errors} errors)")
+        log.debug(f"Cleared {cleared} imgutils function-level caches ({errors} errors)")

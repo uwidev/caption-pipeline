@@ -16,7 +16,6 @@ from typing import Any, Literal
 
 import requests
 from dotenv import load_dotenv
-from loguru import logger
 from PIL import Image
 from tqdm import tqdm
 
@@ -25,11 +24,8 @@ from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.prompts import TORIIGATE_PROMPTS
 from caption_pipeline.utils.llama_server import LlamaServer, LlamaServerConfig
-from caption_pipeline.utils.character_extractor import (
-    CharacterEntry,
-    CharacterSource,
-    get_character_database,
-)
+from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.tag_db import get_display_name, query_character
 
 load_dotenv()
 
@@ -83,7 +79,11 @@ for all images in the batch and stops after processing completes.""",
             "default": "require tags",
         },
         {"flag": "--retries INT", "help": "Max retries for invalid responses", "default": "3"},
-        {"flag": "--force", "help": "Force regenerate NL caption even if one exists", "default": "skip if exists"},
+        {
+            "flag": "--force",
+            "help": "Force regenerate NL caption even if one exists",
+            "default": "skip if exists",
+        },
         {"flag": "--model-path PATH", "help": "Path to ToriiGate .gguf model file"},
         {"flag": "--mmproj-path PATH", "help": "Path to ToriiGate mmproj file"},
         {"flag": "--server-port INT", "help": "Server port", "default": "8081"},
@@ -106,7 +106,11 @@ for all images in the batch and stops after processing completes.""",
             "default": "1024",
         },
         {"flag": "--server-startup-timeout INT", "help": "Server startup timeout", "default": "60"},
-        {"flag": "--server-shutdown-timeout INT", "help": "Server shutdown timeout", "default": "10"},
+        {
+            "flag": "--server-shutdown-timeout INT",
+            "help": "Server shutdown timeout",
+            "default": "10",
+        },
         {
             "flag": "--no-auto-server",
             "help": "Don't manage server lifecycle (assume server is already running)",
@@ -198,14 +202,14 @@ class TagNaturalLanguageStep(PipelineStep):
             env_path = os.getenv("TORIIGATE_MODEL_PATH")
             if env_path:
                 self.model_path = Path(env_path)
-                logger.debug(f"Loaded model_path from env: {self.model_path}")
+                log.debug(f"Loaded model_path from env: {self.model_path}")
 
         self.mmproj_path = mmproj_path
         if self.mmproj_path is None:
             env_path = os.getenv("TORIIGATE_MMPROJ_PATH")
             if env_path:
                 self.mmproj_path = Path(env_path)
-                logger.debug(f"Loaded mmproj_path from env: {self.mmproj_path}")
+                log.debug(f"Loaded mmproj_path from env: {self.mmproj_path}")
 
         self.server_port = server_port
         self.server_host = server_host
@@ -271,9 +275,9 @@ class TagNaturalLanguageStep(PipelineStep):
         if not existing_nl:
             return True
         if self.force:
-            logger.debug(f"Force enabled - regenerating NL caption for {context.image_path.name}")
+            log.debug(f"Force enabled - regenerating NL caption for {context.image_path.name}")
             return True
-        logger.debug(f"NL caption already exists for {context.image_path.name} - skipping")
+        log.debug(f"NL caption already exists for {context.image_path.name} - skipping")
         return False
 
     def process_batch(self, contexts: list[ImageContext]) -> list[ImageContext]:
@@ -301,10 +305,10 @@ class TagNaturalLanguageStep(PipelineStep):
             valid_indices.append(idx)
 
         if not valid_indices:
-            logger.info("No contexts need NL captioning (all already have captions)")
+            log.info("No contexts need NL captioning (all already have captions)")
             return contexts
 
-        logger.info(f"Generating NL captions for {len(valid_indices)} images")
+        log.info(f"Generating NL captions for {len(valid_indices)} images")
 
         results: list[tuple[int, ImageContext]] = []
 
@@ -325,12 +329,12 @@ class TagNaturalLanguageStep(PipelineStep):
                             else:
                                 results.append((idx, context))
                         except Exception as e:
-                            logger.error(f"Failed to process {context.image_path.name}: {e}")
+                            log.error(f"Failed to process {context.image_path.name}: {e}")
                             results.append((idx, context))
 
                     self._server = None
             except Exception as e:
-                logger.error(f"Server management failed: {e}")
+                log.error(f"Server management failed: {e}")
                 raise RuntimeError(f"Failed to start llama-server: {e}") from e
         else:
             # Server is managed externally
@@ -344,7 +348,7 @@ class TagNaturalLanguageStep(PipelineStep):
                     else:
                         results.append((idx, context))
                 except Exception as e:
-                    logger.error(f"Failed to process {context.image_path.name}: {e}")
+                    log.error(f"Failed to process {context.image_path.name}: {e}")
                     results.append((idx, context))
 
         # Merge results back into original list
@@ -362,23 +366,22 @@ class TagNaturalLanguageStep(PipelineStep):
 
         For batch processing, use process_batch() which is more efficient.
         """
-        logger.debug(f"Processing: {context.image_path.name}")
+        with log.section(f"Processing: {context.image_path.name}"):
+            if not self._should_process(context):
+                return context
 
-        if not self._should_process(context):
-            return context
-
-        if self.auto_manage_server:
-            try:
-                with self._create_server() as server:
-                    self._server = server
-                    result = self._process(context)
-                    self._server = None
-                    return result
-            except Exception as e:
-                logger.error(f"Server management failed: {e}")
-                raise RuntimeError(f"Failed to start llama-server: {e}") from e
-        else:
-            return self._process(context)
+            if self.auto_manage_server:
+                try:
+                    with self._create_server() as server:
+                        self._server = server
+                        result = self._process(context)
+                        self._server = None
+                        return result
+                except Exception as e:
+                    log.error(f"Server management failed: {e}")
+                    raise RuntimeError(f"Failed to start llama-server: {e}") from e
+            else:
+                return self._process(context)
 
     # =========================================================================
     # Core Processing
@@ -402,7 +405,7 @@ class TagNaturalLanguageStep(PipelineStep):
             try:
                 if attempt > 0:
                     delay = 1.0 * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                    logger.debug(f"Retry {attempt + 1}/{self.max_retries} after {delay:.1f}s delay")
+                    log.debug(f"Retry {attempt + 1}/{self.max_retries} after {delay:.1f}s delay")
                     time.sleep(delay)
 
                 # Encode image
@@ -416,24 +419,30 @@ class TagNaturalLanguageStep(PipelineStep):
 
                 if caption is None:
                     if attempt < self.max_retries - 1:
-                        logger.warning(f"Attempt {attempt + 1} failed: API returned None, retrying...")
+                        log.warning(f"Attempt {attempt + 1} failed: API returned None, retrying...")
                         continue
-                    logger.warning(f"Failed to generate NL caption after {self.max_retries} attempts")
+                    log.warning(f"Failed to generate NL caption after {self.max_retries} attempts")
                     return context
 
                 # Validate response
                 if self.validate_response:
-                    is_valid, error_msg = self._validate_response(caption, context.image_path.name, attempt)
+                    is_valid, error_msg = self._validate_response(
+                        caption, context.image_path.name, attempt
+                    )
 
                     if is_valid:
                         cleaned = self._clean_response(caption)
-                        logger.info(f"  Generated NL caption: {cleaned[:200]}{'...' if len(cleaned) > 200 else ''}")
+                        log.info(
+                            f"Generated NL caption: {cleaned[:200]}{'...' if len(cleaned) > 200 else ''}"
+                        )
+                        if len(cleaned) >= 200:
+                            log.debug(f"...{cleaned[200:]}")
 
                         # Log prompt context at INFO level
                         tags = metadata.get("tags", [])
                         chars = metadata.get("characters", [])
                         char_str = f", {len(chars)} characters" if chars else ""
-                        logger.info(f"  Context: {len(tags)} tags{char_str}")
+                        log.info(f"Context: {len(tags)} tags{char_str}")
 
                         result = context.copy()
                         result.set_tags([cleaned], section=2)
@@ -442,23 +451,25 @@ class TagNaturalLanguageStep(PipelineStep):
                         return result
 
                     if attempt < self.max_retries - 1:
-                        logger.warning(f"Attempt {attempt + 1} invalid: {error_msg}")
+                        log.warning(f"Attempt {attempt + 1} invalid: {error_msg}")
                         if self.debug:
-                            logger.debug(f"Invalid response preview: {caption[:200]}...")
+                            log.debug(f"Invalid response preview: {caption[:200]}...")
                         continue
 
-                    logger.error(f"All {self.max_retries} attempts failed for {context.image_path.name}")
+                    log.error(
+                        f"All {self.max_retries} attempts failed for {context.image_path.name}"
+                    )
                     if self.debug:
-                        logger.error(f"Final invalid response: {caption[:500]}...")
+                        log.error(f"Final invalid response: {caption[:500]}...")
                     return context
 
                 # No validation - just use it
-                logger.info(f"Generated NL caption for {context.image_path.name}:")
-                logger.info(f"  {caption[:200]}{'...' if len(caption) > 200 else ''}")
+                log.info(f"Generated NL caption for {context.image_path.name}:")
+                log.info(f"{caption[:200]}{'...' if len(caption) > 200 else ''}")
                 tags = metadata.get("tags", [])
                 chars = metadata.get("characters", [])
                 char_str = f", {len(chars)} characters" if chars else ""
-                logger.info(f"  Context: {len(tags)} tags{char_str}")
+                log.info(f"Context: {len(tags)} tags{char_str}")
 
                 result = context.copy()
                 result.set_tags([caption], section=2)
@@ -466,13 +477,15 @@ class TagNaturalLanguageStep(PipelineStep):
                 return result
 
             except requests.exceptions.Timeout as e:
-                logger.warning(f"Timeout on attempt {attempt + 1}/{self.max_retries}: {e}")
+                log.warning(f"Timeout on attempt {attempt + 1}/{self.max_retries}: {e}")
                 if attempt == self.max_retries - 1:
-                    logger.error(f"All {self.max_retries} attempts timed out for {context.image_path.name}")
+                    log.error(
+                        f"All {self.max_retries} attempts timed out for {context.image_path.name}"
+                    )
                     return context
                 continue
             except Exception as e:
-                logger.error(f"Error on attempt {attempt + 1} for {context.image_path.name}: {e}")
+                log.error(f"Error on attempt {attempt + 1} for {context.image_path.name}: {e}")
                 if attempt == self.max_retries - 1:
                     return context
                 continue
@@ -535,7 +548,7 @@ class TagNaturalLanguageStep(PipelineStep):
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        logger.debug(f"API request: {self.caption_type} caption, {self.max_tokens} max tokens")
+        log.debug(f"API request: {self.caption_type} caption, {self.max_tokens} max tokens")
 
         try:
             response = requests.post(
@@ -548,23 +561,23 @@ class TagNaturalLanguageStep(PipelineStep):
 
             result = response.json()
             content = result["choices"][0]["message"]["content"]
-            logger.debug(f"API response: {len(content)} chars")
+            log.debug(f"API response: {len(content)} chars")
             return content
 
         except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection error: {e}")
-            logger.error(f"Server URL: {api_url}")
+            log.error(f"Connection error: {e}")
+            log.error(f"Server URL: {api_url}")
             return None
         except requests.exceptions.Timeout as e:
-            logger.error(f"Request timeout: {e}")
+            log.error(f"Request timeout: {e}")
             return None
         except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response body: {e.response.text[:500]}")
+            log.error(f"API request failed: {e}")
+            if hasattr(e, "response") and e.response is not None:
+                log.error(f"Response body: {e.response.text[:500]}")
             return None
         except (KeyError, IndexError) as e:
-            logger.error(f"Failed to parse API response: {e}")
+            log.error(f"Failed to parse API response: {e}")
             return None
 
     # =========================================================================
@@ -632,118 +645,112 @@ class TagNaturalLanguageStep(PipelineStep):
 
     def _prepare_metadata(self, context: ImageContext) -> dict[str, Any]:
         """Prepare metadata for the prompt."""
-        logger.info(f"Processing: {context.image_path.name}")
+        log.info(f"Processing: {context.image_path.name}")
 
         tags = context.get_tags(section=1)
 
         if not tags and not self.require_tags:
             tags = context.get_tags(section=0)
             if not tags:
-                logger.debug("No tags found - generating NL caption from image only")
+                log.debug("No tags found - generating NL caption from image only")
                 tags = []
 
         # ===== DEBUG: Log grounding tags =====
         if self.debug and tags:
-            logger.debug(f"Grounding tags ({len(tags)} total):")
+            log.debug(f"Grounding tags ({len(tags)} total):")
             for i, tag in enumerate(tags):
-                logger.debug(f"  {i+1:3d}. {tag}")
+                log.debug(f"{i + 1:3d}. {tag}")
 
-        character_entries = context.character_entries
+        character_tags = context.get_character_tags()
 
         char_p_tags = {"chars": {}, "skins": {}}
         char_descr = {"chars": {}, "skins": {}}
-        char_db = get_character_database()
 
         # ===== DEBUG: Log character entries =====
         if self.debug:
-            if character_entries:
-                logger.debug(f"Character entries ({len(character_entries)}):")
-                for entry in character_entries:
-                    logger.debug(f"  - {entry.tag} (source: {entry.source.name})")
+            if character_tags:
+                log.debug(f"Characters ({len(character_tags)}):")
+                for character in character_tags:
+                    log.debug(f"- {character}")
             else:
-                logger.debug("No character entries found")
+                log.debug("No characters found")
 
-        if character_entries:
-            def entry_sort_key(e: CharacterEntry) -> int:
-                if e.source == CharacterSource.USER_HINTED:
-                    return 0
-                if e.source == CharacterSource.SKIN_AS_CHARACTER:
-                    return 1
-                if e.source == CharacterSource.ALIAS_RESOLVED:
-                    return 2
-                return 3
-
-            for entry in sorted(character_entries, key=entry_sort_key):
-                char_name = entry.get_display_name()
-
-                if self.debug:
-                    logger.debug(f"  Loading data for character: '{char_name}'")
-
-                if entry.data:
-                    popular_tags = entry.data.popular_tags
-                    description = entry.data.description
-                    if self.debug and popular_tags:
-                        logger.debug(f"    Popular tags: {', '.join(popular_tags)}")
-                    elif self.debug:
-                        logger.debug(f"    Popular tags: (none)")
-                else:
-                    data = char_db.query(entry.tag)
-                    if data:
-                        popular_tags = data.popular_tags
-                        description = data.description
-                        if self.debug and popular_tags:
-                            logger.debug(f"    Popular tags: {', '.join(popular_tags)}")
-                        elif self.debug:
-                            logger.debug(f"    Popular tags: (none)")
-                    else:
-                        if entry.is_skin and entry.parent_tag:
-                            data = char_db.query(entry.parent_tag)
-                            if data:
-                                popular_tags = data.popular_tags
-                                description = data.description
-                                if self.debug and popular_tags:
-                                    logger.debug(f"    Popular tags (from parent '{entry.parent_tag}'): {', '.join(popular_tags)}")
-                                elif self.debug:
-                                    logger.debug(f"    Popular tags (from parent '{entry.parent_tag}'): (none)")
-                            else:
-                                popular_tags = []
-                                description = ""
-                                if self.debug:
-                                    logger.debug(f"    No data found for parent '{entry.parent_tag}'")
-                        else:
-                            popular_tags = []
-                            description = ""
-                            if self.debug:
-                                logger.debug(f"    No data found for '{entry.tag}'")
-
-                char_p_tags["chars"][char_name] = popular_tags
-                char_descr["chars"][char_name] = description
-
-                if self.debug and description:
-                    logger.debug(f"    Description: {description}")
-                elif self.debug:
-                    logger.debug(f"    Description: (none)")
-
-            tags_with_control = tags.copy() if tags else []
-
-        else:
+        # Handle unnamed/original character case
+        if context.has_unnamed_character():
             tags_with_control = tags.copy() if tags else []
             if "original" not in tags_with_control:
                 tags_with_control.append("original")
                 if self.debug:
-                    logger.debug("Added 'original' control signal for ToriiGate")
+                    log.debug("Added 'original' control signal for unnamed character")
+
+            metadata = {
+                "tags": tags_with_control,
+                "characters": [],
+                "char_p_tags": {"chars": {}, "skins": {}},
+                "char_descr": {"chars": {}, "skins": {}},
+            }
+
+            if self.debug:
+                log.debug("Unnamed/original character detected - will describe without naming")
+
+            return metadata
+
+        # Handle named characters
+        if character_tags:
+            for character in character_tags:
+                # Resolve skin to parent for display
+                char_name = get_display_name(character)
+
+                if self.debug:
+                    log.debug(f"Loading data for character: '{char_name}'")
+
+                # Query character data from booru_characters.csv
+                data = query_character(char_name)
+
+                if data:
+                    popular_tags = data.get("popular_tags", [])
+                    description = data.get("description", "")
+
+                    if self.debug and popular_tags:
+                        log.debug(f"Popular tags: {', '.join(popular_tags)}")
+                    elif self.debug:
+                        log.debug("  Popular tags: (none)")
+
+                    if self.debug and description:
+                        log.debug(f"Description: {description}")
+                    elif self.debug:
+                        log.debug("  Description: (none)")
+                else:
+                    # No data found - assume unnamed/original character
+                    popular_tags = []
+                    description = ""
+                    if self.debug:
+                        log.debug(
+                            f"  No data found for '{char_name}' - treating as unnamed/original"
+                        )
+
+                char_p_tags["chars"][char_name] = popular_tags
+                char_descr["chars"][char_name] = description
+
+            tags_with_control = tags.copy() if tags else []
+
+        else:
+            # No characters at all - add control signal to prevent guessing
+            tags_with_control = tags.copy() if tags else []
+            if "original" not in tags_with_control:
+                # Always add 'original' for grounding on TorriGate for unnamed characters,
+                # it helps prevent forcing charater names.
+                tags_with_control.append("original")
+                if self.debug:
+                    log.debug("Added 'original' control signal for ToriiGate")
             char_p_tags["chars"]["DO NOT CAPTION CHARACTER NAME"] = []
             char_descr["chars"]["DO NOT CAPTION CHARACTER NAME"] = ""
             if self.debug:
-                logger.debug("Added 'DO NOT CAPTION CHARACTER NAME' control signal")
+                log.debug("Added 'DO NOT CAPTION CHARACTER NAME' control signal")
 
         metadata = {
             "tags": tags_with_control,
-            "characters": (
-                [e.get_display_name() for e in character_entries]
-                if character_entries
-                else []
-            ),
+            "characters": character_tags if character_tags else [],
             "char_p_tags": char_p_tags,
             "char_descr": char_descr,
         }
@@ -752,23 +759,23 @@ class TagNaturalLanguageStep(PipelineStep):
         char_names = metadata["characters"]
         if char_names:
             char_str = f", characters: {', '.join(char_names)}"
-            logger.info(f"  Context: {len(metadata['tags'])} tags{char_str}")
+            log.info(f"Context: {len(metadata['tags'])} tags{char_str}")
         else:
-            logger.info(f"  Context: {len(metadata['tags'])} tags (no characters)")
+            log.info(f"Context: {len(metadata['tags'])} tags (no characters)")
 
         # ===== DEBUG: Log full metadata =====
         if self.debug:
-            logger.debug("Full metadata sent to model:")
-            logger.debug(f"  tags ({len(metadata['tags'])}): {', '.join(metadata['tags'])}")
-            logger.debug(f"  characters: {metadata['characters']}")
-            if metadata['char_p_tags']['chars']:
-                logger.debug("  char_p_tags:")
-                for char_name, tags_list in metadata['char_p_tags']['chars'].items():
-                    logger.debug(f"    {char_name}: {', '.join(tags_list) if tags_list else '(none)'}")
-            if metadata['char_descr']['chars']:
-                logger.debug("  char_descr:")
-                for char_name, descr in metadata['char_descr']['chars'].items():
-                    logger.debug(f"    {char_name}: {descr if descr else '(none)'}")
+            log.debug("Full metadata sent to model:")
+            log.debug(f"tags ({len(metadata['tags'])}): {', '.join(metadata['tags'])}")
+            log.debug(f"characters: {metadata['characters']}")
+            if metadata["char_p_tags"]["chars"]:
+                log.debug("char_p_tags:")
+                for char_name, tags_list in metadata["char_p_tags"]["chars"].items():
+                    log.debug(f"{char_name}: {', '.join(tags_list) if tags_list else '(none)'}")
+            if metadata["char_descr"]["chars"]:
+                log.debug("char_descr:")
+                for char_name, descr in metadata["char_descr"]["chars"].items():
+                    log.debug(f"{char_name}: {descr if descr else '(none)'}")
 
         return metadata
 
@@ -783,7 +790,7 @@ class TagNaturalLanguageStep(PipelineStep):
         characters = metadata.get("characters", [])
         if not characters and "original" not in tags:
             tags.append("original")
-            logger.debug("Added 'original' control signal for ToriiGate")
+            log.debug("Added 'original' control signal for ToriiGate")
 
         if tags:
             random.shuffle(tags)

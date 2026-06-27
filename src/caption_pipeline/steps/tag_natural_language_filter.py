@@ -15,14 +15,14 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from loguru import logger
 from tqdm import tqdm
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.prompts import NL_FILTER_SYSTEM_PROMPT
-from caption_pipeline.utils import OllamaManager, OllamaConfig
+from caption_pipeline.utils import OllamaConfig, OllamaManager
+from caption_pipeline.utils.logging_utils import log
 
 
 @step_help(
@@ -59,12 +59,12 @@ The system prompt is extracted to prompts/filter.py for maintainability.""",
 class TagNaturalLanguageFilterStep(PipelineStep):
     """
     Filter natural language captions through Ollama to remove artstyle mentions.
-    
+
     Model lifecycle:
     - Batch start: Model is loaded into Ollama memory
     - During batch: Model stays loaded (keep_alive=3600, renewed on each request)
     - Batch end: Model is unloaded from memory
-    
+
     Uses the unified ResourceManager pattern (OllamaManager).
     """
 
@@ -101,10 +101,10 @@ class TagNaturalLanguageFilterStep(PipelineStep):
         self.backup_original: bool = backup_original
         self.max_length_ratio: float = max_length_ratio
         self.keep_alive: int = keep_alive
-        
+
         # Model manager (created in process_batch)
         self._manager: OllamaManager | None = None
-        
+
         # System prompt from external file
         self._system_prompt: str = NL_FILTER_SYSTEM_PROMPT
 
@@ -120,80 +120,78 @@ class TagNaturalLanguageFilterStep(PipelineStep):
     def process(self, context: ImageContext) -> ImageContext | None:
         """
         Filter a single context's natural language caption.
-        
+
         This runs after the model is already loaded by process_batch().
         """
-        logger.debug(f"Processing: {context.image_path.name}")
+        with log.section(f"Processing: {context.image_path.name}"):
+            nl_caption: list[str] = context.get_tags(section=2)
+            if not nl_caption or not nl_caption[0]:
+                log.debug(f"No NL caption to filter for {context.image_path.name}")
+                return context
 
-        nl_caption: list[str] = context.get_tags(section=2)
-        if not nl_caption or not nl_caption[0]:
-            logger.debug(f"No NL caption to filter for {context.image_path.name}")
-            return context
+            original_caption: str = nl_caption[0]
 
-        original_caption: str = nl_caption[0]
-        logger.debug(f"Filtering NL caption for {context.image_path.name}")
-
-        # Process through Ollama with retries
-        filtered, error = self._process_single_caption_with_retry(
-            original_caption,
-            context.image_path.name,
-        )
-
-        if filtered:
-            # Store backup if requested
-            if self.backup_original:
-                context.metadata["nl_original"] = original_caption
-
-            # Update the context
-            result: ImageContext = context.copy()
-            result.set_tags([filtered], section=2)
-            result.metadata["nl_filtered"] = True
-            result.metadata["nl_model"] = self.model
-
-            # === Show delta ===
-            original_len = len(original_caption)
-            filtered_len = len(filtered)
-            diff = original_len - filtered_len
-            
-            logger.info(
-                f"Filtered NL caption for {context.image_path.name}: "
-                f"{original_len} chars → {filtered_len} chars "
-                f"({'-' if diff > 0 else '+'}{diff if diff != 0 else 'no change'})"
+            # Process through Ollama with retries
+            filtered, error = self._process_single_caption_with_retry(
+                original_caption,
+                context.image_path.name,
             )
-            
-            # Show the delta using context from the difference
-            if diff != 0 and filtered != original_caption:
-                import difflib
-                
-                # Split by sentences for better diff
-                orig_sentences = [s.strip() for s in original_caption.split('. ') if s.strip()]
-                filt_sentences = [s.strip() for s in filtered.split('. ') if s.strip()]
-                
-                # Find differences
-                matcher = difflib.SequenceMatcher(None, orig_sentences, filt_sentences)
-                
-                for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                    if tag == 'replace':
-                        removed = '. '.join(orig_sentences[i1:i2])
-                        added = '. '.join(filt_sentences[j1:j2])
-                        logger.info(f"  Replaced:")
-                        logger.info(f"    - {removed}")
-                        logger.info(f"    + {added}")
-                    elif tag == 'delete':
-                        removed = '. '.join(orig_sentences[i1:i2])
-                        logger.info(f"  Removed: {removed}")
-                    elif tag == 'insert':
-                        added = '. '.join(filt_sentences[j1:j2])
-                        logger.info(f"  Added: {added}")
-            
-            # Full text at DEBUG level
-            logger.debug(f"Original: {original_caption}")
-            logger.debug(f"Filtered: {filtered}")
 
-            return result
-        else:
-            logger.warning(f"Failed to filter NL caption for {context.image_path.name}: {error}")
-            return context
+            if filtered:
+                # Store backup if requested
+                if self.backup_original:
+                    context.metadata["nl_original"] = original_caption
+
+                # Update the context
+                result: ImageContext = context.copy()
+                result.set_tags([filtered], section=2)
+                result.metadata["nl_filtered"] = True
+                result.metadata["nl_model"] = self.model
+
+                # === Show delta ===
+                original_len = len(original_caption)
+                filtered_len = len(filtered)
+                diff = original_len - filtered_len
+
+                log.info(
+                    f"Filtered NL caption: "
+                    f"{original_len} chars → {filtered_len} chars "
+                    f"({'-' if diff > 0 else '+'}{diff if diff != 0 else 'no change'})"
+                )
+
+                # Show the delta using context from the difference
+                if diff != 0 and filtered != original_caption:
+                    import difflib
+
+                    # Split by sentences for better diff
+                    orig_sentences = [s.strip() for s in original_caption.split(". ") if s.strip()]
+                    filt_sentences = [s.strip() for s in filtered.split(". ") if s.strip()]
+
+                    # Find differences
+                    matcher = difflib.SequenceMatcher(None, orig_sentences, filt_sentences)
+
+                    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                        if tag == "replace":
+                            removed = ". ".join(orig_sentences[i1:i2])
+                            added = ". ".join(filt_sentences[j1:j2])
+                            log.info("Replaced:")
+                            log.info(f"  - {removed}")
+                            log.info(f"  + {added}")
+                        elif tag == "delete":
+                            removed = ". ".join(orig_sentences[i1:i2])
+                            log.info(f"Removed: {removed}")
+                        elif tag == "insert":
+                            added = ". ".join(filt_sentences[j1:j2])
+                            log.info(f"Added: {added}")
+
+                # Full text at DEBUG level
+                log.debug(f"Original: {original_caption}")
+                log.debug(f"Filtered: {filtered}")
+
+                return result
+            else:
+                log.warning(f"Failed to filter NL caption for {context.image_path.name}: {error}")
+                return context
 
     def process_batch(
         self,
@@ -202,7 +200,7 @@ class TagNaturalLanguageFilterStep(PipelineStep):
     ) -> list[ImageContext]:
         """
         Process multiple contexts with model loaded once for the entire batch.
-        
+
         This is the key optimization: the model loads once at the start,
         stays loaded for all images, and unloads at the end.
         """
@@ -212,10 +210,10 @@ class TagNaturalLanguageFilterStep(PipelineStep):
         # Filter valid contexts
         valid_contexts: list[ImageContext] = [ctx for ctx in contexts if self.validate(ctx)]
         if not valid_contexts:
-            logger.info("No valid contexts for NL filtering")
+            log.info("No valid contexts for NL filtering")
             return contexts
 
-        logger.info(f"Filtering NL captions for {len(valid_contexts)} images")
+        log.info(f"Filtering NL captions for {len(valid_contexts)} images")
 
         results: list[ImageContext] = []
 
@@ -226,10 +224,10 @@ class TagNaturalLanguageFilterStep(PipelineStep):
             ollama_url=self.ollama_url,
             keep_alive=self.keep_alive,
         )
-        
+
         with OllamaManager(config) as manager:
             self._manager = manager
-            
+
             iterator = tqdm(
                 valid_contexts,
                 desc="Filtering NL captions",
@@ -242,7 +240,7 @@ class TagNaturalLanguageFilterStep(PipelineStep):
                 result: ImageContext | None = self.process(context)
                 if result is not None:
                     results.append(result)
-            
+
             self._manager = None
         # === MODEL UNLOADED HERE ===
 
@@ -324,7 +322,7 @@ class TagNaturalLanguageFilterStep(PipelineStep):
         last_error: str | None = None
 
         for attempt in range(self.max_retries):
-            logger.debug(f"Attempt {attempt + 1}/{self.max_retries} for {filename}")
+            log.debug(f"Attempt {attempt + 1}/{self.max_retries} for {filename}")
 
             try:
                 result, error = self._call_ollama(content)
@@ -332,7 +330,7 @@ class TagNaturalLanguageFilterStep(PipelineStep):
                 if error:
                     last_error = error
                     if attempt < self.max_retries - 1:
-                        logger.warning(
+                        log.warning(
                             f"Attempt {attempt + 1} failed for {filename}: {error}. Retrying..."
                         )
                         time.sleep(1)
@@ -348,42 +346,43 @@ class TagNaturalLanguageFilterStep(PipelineStep):
 
                 if attempt == self.max_retries - 1:
                     # Only show full details at DEBUG level
-                    logger.debug("=" * 80)
-                    logger.debug(f"FAILED TO FILTER: {filename} after {self.max_retries} attempts")
-                    logger.debug("-" * 80)
-                    logger.debug("ORIGINAL CAPTION:")
-                    logger.debug(content)
-                    logger.debug("-" * 80)
-                    logger.debug("INVALID RESPONSE:")
-                    logger.debug(result)
-                    logger.debug("-" * 80)
-                    logger.debug(f"REASON: {last_error}")
-                    logger.debug("=" * 80)
+                    log.debug("=" * 80)
+                    log.debug(f"FAILED TO FILTER: {filename} after {self.max_retries} attempts")
+                    log.debug("-" * 80)
+                    log.debug("ORIGINAL CAPTION:")
+                    log.debug(content)
+                    log.debug("-" * 80)
+                    log.debug("INVALID RESPONSE:")
+                    log.debug(result)
+                    log.debug("-" * 80)
+                    log.debug(f"REASON: {last_error}")
+                    log.debug("=" * 80)
                     return None, last_error
                 else:
-                    logger.warning(
+                    log.warning(
                         f"Attempt {attempt + 1} produced invalid response for {filename}: {last_error}"
                     )
-                    logger.debug(f"Retrying {filename} (attempt {attempt + 2}/{self.max_retries})")
+                    log.debug(f"Response: {result}")
+                    log.debug(f"Retrying {filename} (attempt {attempt + 2}/{self.max_retries})")
                     time.sleep(2)
                     continue
 
             except Exception as e:
                 last_error = f"Unexpected error: {str(e)}"
-                logger.error(f"Unexpected error on attempt {attempt + 1} for {filename}: {e}")
+                log.error(f"Unexpected error on attempt {attempt + 1} for {filename}: {e}")
 
                 if attempt < self.max_retries - 1:
                     time.sleep(2)
                     continue
 
-                logger.error("=" * 80)
-                logger.error(f"FAILED TO FILTER: {filename} after {self.max_retries} attempts")
-                logger.error("-" * 80)
-                logger.error("ORIGINAL CAPTION:")
-                logger.error(content[:500] + "..." if len(content) > 500 else content)
-                logger.error("-" * 80)
-                logger.error(f"ERROR: {last_error}")
-                logger.error("=" * 80)
+                log.error("=" * 80)
+                log.error(f"FAILED TO FILTER: {filename} after {self.max_retries} attempts")
+                log.error("-" * 80)
+                log.error("ORIGINAL CAPTION:")
+                log.error(content[:500] + "..." if len(content) > 500 else content)
+                log.error("-" * 80)
+                log.error(f"ERROR: {last_error}")
+                log.error("=" * 80)
                 return None, last_error
 
         return None, last_error or "Max retries exceeded"
@@ -462,16 +461,16 @@ class TagNaturalLanguageFilterStep(PipelineStep):
             True if successful, False otherwise
         """
         if not file_path.exists():
-            logger.error(f"File not found: {file_path}")
+            log.error(f"File not found: {file_path}")
             return False
 
         try:
             original_content: str = file_path.read_text(encoding="utf-8").strip()
             if not original_content:
-                logger.warning(f"File is empty: {file_path}")
+                log.warning(f"File is empty: {file_path}")
                 return False
         except Exception as e:
-            logger.error(f"Failed to read {file_path}: {e}")
+            log.error(f"Failed to read {file_path}: {e}")
             return False
 
         # Use the manager for single file
@@ -480,7 +479,7 @@ class TagNaturalLanguageFilterStep(PipelineStep):
             ollama_url=self.ollama_url,
             keep_alive=self.keep_alive,
         )
-        
+
         with OllamaManager(config) as manager:
             self._manager = manager
             filtered, error = self._process_single_caption_with_retry(
@@ -500,13 +499,15 @@ class TagNaturalLanguageFilterStep(PipelineStep):
             # Write filtered content
             try:
                 file_path.write_text(filtered, encoding="utf-8")
-                logger.info(f"Filtered: {file_path.name} ({len(original_content)} → {len(filtered)} chars)")
+                log.info(
+                    f"Filtered: {file_path.name} ({len(original_content)} → {len(filtered)} chars)"
+                )
                 return True
             except Exception as e:
-                logger.error(f"Failed to write {file_path}: {e}")
+                log.error(f"Failed to write {file_path}: {e}")
                 return False
         else:
-            logger.error(f"Failed to filter {file_path.name}: {error}")
+            log.error(f"Failed to filter {file_path.name}: {error}")
             return False
 
     def filter_directory(
@@ -536,10 +537,10 @@ class TagNaturalLanguageFilterStep(PipelineStep):
             files = list(directory.glob(pattern))
 
         if not files:
-            logger.warning(f"No files matching {pattern} found in {directory}")
+            log.warning(f"No files matching {pattern} found in {directory}")
             return 0, 0
 
-        logger.info(f"Found {len(files)} files to filter")
+        log.info(f"Found {len(files)} files to filter")
 
         backup_dir: Path | None = directory / "backup" if self.backup_original else None
 
@@ -552,5 +553,5 @@ class TagNaturalLanguageFilterStep(PipelineStep):
             else:
                 failure_count += 1
 
-        logger.info(f"Filtered {success_count}/{len(files)} files successfully")
+        log.info(f"Filtered {success_count}/{len(files)} files successfully")
         return success_count, failure_count

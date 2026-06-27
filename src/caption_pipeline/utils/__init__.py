@@ -2,20 +2,27 @@
 Utility functions and helpers for the caption pipeline.
 """
 
-from caption_pipeline.utils.booru_characters import DanbooruCharacters
-from caption_pipeline.utils.tag_db import load_tag_databases
-from caption_pipeline.utils.tokenizer import get_tokenizer
-from caption_pipeline.utils.character_extractor import (
-    CharacterExtractor,
-    CharacterEntry,
-    CharacterData,
-    CharacterSource,
-    CharacterDatabase,
-    get_character_database,
-    extract_characters_from_tags,
-    normalize_character_tag,
-    load_character_database,
+from caption_pipeline.utils.tag_db import (
+    # Database loading
+    load_tag_databases,
+    load_character_tags_only,
+    load_general_tags_only,
+    load_character_data,
+    # Character queries
+    query_character,
+    query_character_field,
+    get_character_popular_tags,
+    get_character_description,
+    get_display_name,
+    get_parent_tag,
+    is_alias,
+    is_skin,
+    get_character_info,
+    search_characters,
+    get_all_characters,
+    get_character_names,
 )
+from caption_pipeline.utils.tokenizer import get_tokenizer
 from caption_pipeline.utils.ollama_manager import (
     OllamaManager,
     OllamaConfig,
@@ -27,22 +34,27 @@ from caption_pipeline.utils.llama_server import (
 from caption_pipeline.utils.model_manager import (
     ModelManager
 )
+from caption_pipeline.utils.logging_utils import IndentedLogger, log
 
 __all__ = [
-    # Character extractor V2
-    "CharacterExtractor",
-    "CharacterEntry",
-    "CharacterData",
-    "CharacterSource",
-    "CharacterDatabase",
-    "get_character_database",
-    "extract_characters_from_tags",
-    "normalize_character_tag",
-    "load_character_database",
-    # Legacy utilities
-    "DanbooruCharacters",
+    # tag_db
     "load_tag_databases",
-    "load_character_db",
+    "load_character_tags_only",
+    "load_general_tags_only",
+    "load_character_data",
+    "query_character",
+    "query_character_field",
+    "get_character_popular_tags",
+    "get_character_description",
+    "get_display_name",
+    "get_parent_tag",
+    "is_alias",
+    "is_skin",
+    "get_character_info",
+    "search_characters",
+    "get_all_characters",
+    "get_character_names",
+    # tokenizer
     "get_tokenizer",
     # Resource managers
     "OllamaManager",
@@ -50,4 +62,7 @@ __all__ = [
     "LlamaServer",
     "LlamaServerConfig",
     "ModelManager",
+    #Logging
+    "IndentedLogger",
+    "log",
 ]

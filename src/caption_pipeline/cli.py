@@ -22,9 +22,9 @@ from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguag
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.utils import (
-    CharacterExtractor,
     load_tag_databases,
 )
+from caption_pipeline.utils.logging_utils import log
 
 # Image MIME types supported
 SUPPORTED_IMAGE_MIMES: set[str] = {
@@ -41,6 +41,8 @@ SUPPORTED_IMAGE_MIMES: set[str] = {
 
 # Cache for character database
 _CHARACTER_TAGS: set[str] | None = None
+
+RATING_TAGS = {"safe", "questionable", "explicit", "general", "sensitive"}
 
 
 def get_character_tags() -> set[str]:
@@ -59,7 +61,7 @@ def normalize_character_tag(tag: str) -> str:
     Database format: lowercase_with_underscores
 
     Input: "albedo (overlord)" or "albedo_(overlord)" or "character:albedo"
-    Output: "albedo_(overlord)"  # (lowercase + spaces → underscores)
+    Output: "albedo_(overlord)"# (lowercase + spaces → underscores)
     """
     if not tag:
         return ""
@@ -84,11 +86,22 @@ def setup_logging(debug: bool = False) -> None:
 
     # Configure loguru with colors
     if debug:
+        # Find the longest module name from all loaded modules
+        max_module_len = 0
+        for name, module in sys.modules.items():
+            if name.startswith("caption_pipeline"):
+                short_name = name.split(".")[-1]
+                max_module_len = max(max_module_len, len(short_name))
+
+        # Fallback if no modules found
+        if max_module_len == 0:
+            max_module_len = 20
+
         level = "DEBUG"
-        format_str = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan> - <level>{message}</level>"
+        format_str = f"<green>{{time:YYYY-MM-DD HH:mm:ss.SSS}}</green> | <level>{{level: <8}}</level> | <cyan>{{module: <{max_module_len}}}</cyan> - <level>{{message}}</level>"
     else:
         level = "INFO"
-        format_str = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan> - <level>{message}</level>"
+        format_str = "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> - <level>{message}</level>"
 
     # Add stdout sink with colors
     logger.add(
@@ -160,7 +173,7 @@ def is_image_file(file_path: Path) -> bool:
         # python-magic not available, fall back to extension detection
         pass
     except Exception as e:
-        logger.debug(f"Failed to detect MIME type for {file_path}: {e}")
+        log.debug(f"Failed to detect MIME type for {file_path}: {e}")
 
     return False
 
@@ -181,17 +194,17 @@ def find_images_in_directory(
         List of image file paths
     """
     if not directory.exists():
-        logger.error(f"Directory not found: {directory}")
+        log.error(f"Directory not found: {directory}")
         return []
 
     if not directory.is_dir():
         # If it's a file, check if it's an image
         if is_image_file(directory):
             return [directory]
-        logger.warning(f"Not a directory or image file: {directory}")
+        log.warning(f"Not a directory or image file: {directory}")
         return []
 
-    logger.info(f"Scanning directory: {directory}")
+    log.info(f"Scanning directory: {directory}")
 
     image_files: list[Path] = []
 
@@ -205,7 +218,7 @@ def find_images_in_directory(
         if file_path.is_file() and is_image_file(file_path):
             image_files.append(file_path)
 
-    logger.info(f"Found {len(image_files)} image files")
+    log.info(f"Found {len(image_files)} image files")
 
     return image_files
 
@@ -230,8 +243,6 @@ def load_existing_caption(image_path: Path) -> list[list[str]]:
         - Prepended and main tags are lists of strings
         - NL caption is a list with a SINGLE string
     """
-    logger.debug(f"Loading tags from file {image_path.name}")
-
     caption_path = image_path.with_suffix(".txt")
     if not caption_path.exists():
         return [[], [], []]
@@ -242,24 +253,44 @@ def load_existing_caption(image_path: Path) -> list[list[str]]:
 
     def split_and_underscore(text: str) -> list[str]:
         """Split tags by comma, handling both ', ' and ',', and convert space to underscore."""
-        if not text:
+        if not text or text.strip() == "":
             return []
+        # Split by comma and clean each tag
         tags = [t.strip().replace(" ", "_") for t in text.split(",") if t.strip()]
         return tags
 
     # Check if we have sections separated by " ||| "
-    if " ||| " in content:
-        sections = content.split(" ||| ")
-
-        # Always create exactly 3 sections
+    # Handle case where content might start with "|||" or " |||"
+    normalized_content = content
+    
+    # If the content starts with "|||" (with or without space), treat first section as empty
+    if normalized_content.startswith("|||"):
+        normalized_content = " " + normalized_content  # Add space to make parsing consistent
+    elif normalized_content.startswith(" |||"):
+        # Already has leading space, keep as is
+        pass
+    
+    if " ||| " in normalized_content:
+        sections = normalized_content.split(" ||| ")
+        
+        # Strip whitespace from each section
+        sections = [s.strip() for s in sections]
+        
+        # Handle the case where the first section is empty (content starts with "|||")
+        if sections and sections[0] == "":
+            sections = sections[1:]  # Remove the empty first section
+            # Now we have [section0, section1, section2] but section0 was empty
+            # So we need to add an empty section0 back
+            sections = [""] + sections
+        
         parsed_sections = []
 
         for idx, section in enumerate(sections):
-            if idx == 2:  # Section 3 (index 2) is NL - KEEP AS SINGLE STRING
+            if idx == 2:  # Section 2 is NL - KEEP AS SINGLE STRING
                 # Store the ENTIRE section as a single string
                 parsed_sections.append([section.strip()])
             else:
-                # Sections 1 and 2 (indices 0, 1) are tags - split by commas
+                # Sections 0 and 1 are tags - split by commas
                 parsed_sections.append(split_and_underscore(section))
 
         # Ensure we have exactly 3 sections
@@ -271,6 +302,100 @@ def load_existing_caption(image_path: Path) -> list[list[str]]:
         # No sections - treat as single tag list (section 1)
         tags = split_and_underscore(content)
         return [[], tags, []]
+
+
+def extract_rating(tags: list[str]) -> tuple[list[str], str | None]:
+    """
+    Validate that only one rating tag exists in the tags.
+
+    Args:
+        tags: List of tags to check
+
+    Returns:
+        Tuple of (filtered_tags, rating)
+        - filtered_tags: Tags without rating tags
+        - rating: The rating tag if found, None otherwise
+
+    Raises:
+        ValueError: If multiple rating tags are found
+    """
+    found_ratings = []
+    filtered_tags = []
+
+    for tag in tags:
+        normalized = tag.lower().strip()
+        if normalized in RATING_TAGS:
+            found_ratings.append(tag)
+        else:
+            filtered_tags.append(tag)
+
+    if len(found_ratings) > 1:
+        log.warning(
+            f"Multiple rating tags found: {', '.join(found_ratings)}. "
+            f"Using '{found_ratings[0]}' as the rating."
+        )
+        # Keep the first rating tag found, remove others
+        rating = found_ratings[0]
+    elif len(found_ratings) == 1:
+        rating = found_ratings[0]
+    else:
+        rating = None
+
+    return filtered_tags, rating
+
+
+def extract_character_hints(tags: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Extract character tags from user hints using the central tag database.
+
+    Rules:
+    1. Tags with "character:" prefix are ALWAYS characters (user explicitly said so)
+    2. No prefix? Cross-check with tag database to find character tags
+
+    Args:
+        tags: List of tags to process
+
+    Returns:
+        Tuple of (remaining_tags, character_tags)
+    """
+
+    characters: list[str] = []
+    remaining: list[str] = []
+    explicit_hints: list[str] = []
+
+    # Try 1: Look for character: prefixed tags first
+    for tag in tags:
+        if tag.startswith("character:"):
+            # Extract the actual name
+            char_name = tag[10:].strip().lower().replace(" ", "_")
+            if char_name:
+                explicit_hints.append(char_name)
+
+    if explicit_hints:
+        # We found explicit characters earlier, keep everything except character tags
+        remaining.extend([tag for tag in tags if not tag.startswith("character:")])
+        characters = explicit_hints
+        log.debug(f"Found {len(characters)} explicit character hints")
+        return remaining, characters
+
+    # Try 2: Check each tag if they are a character, just not prefixed
+    from caption_pipeline.utils.tag_db import load_character_tags_only
+
+    character_tag_set = load_character_tags_only()
+    tags_to_remove = []
+
+    for tag in tags:
+        if tag in character_tag_set:
+            characters.append(tag)
+            tags_to_remove.append(tag)
+            log.debug(f"Found character in tag database: '{tag}")
+        else:
+            remaining.append(tag)
+
+    if characters:
+        return remaining, characters
+
+    return remaining, characters
 
 
 def get_all_step_classes() -> list[type]:
@@ -318,19 +443,22 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
 
             case "tag:generate" | "tag:gen":
                 threshold = 0.35
+                character_threshold = 0.75
                 whitelist = []
                 blacklist = []
                 drop_overlap = True
-                infer_characters = True
+                infer_characters = False
                 unload_models = True
                 use_hints = True
 
                 i = 1
                 while i < len(parts):
                     match parts[i]:
-                        case "--threshold":
+                        case "--threshold" | "--thresh":
                             threshold = float(parts[i + 1])
                             i += 2
+                        case "--character-threshold" | "--cthresh":
+                            character_threshold = float(parts[i + 1])
                         case "--whitelist":
                             whitelist = parts[i + 1].split(",")
                             i += 2
@@ -340,8 +468,8 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--no-drop-overlap":
                             drop_overlap = False
                             i += 1
-                        case "--no-infer-characters":
-                            infer_characters = False
+                        case "--infer-characters":
+                            infer_characters = True
                             i += 1
                         case "--no-unload-models":
                             unload_models = False
@@ -355,14 +483,15 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case _:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
-                                f"Available flags: --threshold, --whitelist, --blacklist, "
-                                f"--no-drop-overlap, --no-infer-characters, --no-unload-models, "
-                                f"--use-hints, --no-use-hints"
+                                f"Available flags: --threshold, --thresh, --character-threshold "
+                                f"--cthresh --whitelist, --blacklist --no-drop-overlap "
+                                f"--infer-characters --no-unload-models --use-hints, --no-use-hints"
                             )
 
                 steps.append(
                     TagGenerationStep(
                         threshold=threshold,
+                        character_threshold=character_threshold,
                         whitelist=whitelist,
                         blacklist=blacklist,
                         drop_overlap=drop_overlap,
@@ -886,14 +1015,14 @@ Use --help-steps to see detailed step reference.
     if args.command == "process":
         setup_logging(args.debug)
 
-        logger.info("Starting caption pipeline")
-        logger.debug("Debug mode enabled")
+        log.info("Starting caption pipeline")
+        log.debug("Debug mode enabled")
 
         # Find input files
         input_path = Path(args.input)
 
         if input_path.is_dir():
-            logger.info(f"Processing directory: {input_path}")
+            log.info(f"Processing directory: {input_path}")
             input_files = find_images_in_directory(
                 input_path,
                 recursive=args.recursive,
@@ -902,58 +1031,91 @@ Use --help-steps to see detailed step reference.
             if is_image_file(input_path):
                 input_files = [input_path]
             else:
-                logger.error(f"File is not a supported image: {input_path}")
+                log.error(f"File is not a supported image: {input_path}")
                 return
         else:
-            logger.error(f"Input path does not exist: {input_path}")
+            log.error(f"Input path does not exist: {input_path}")
             return
 
         if not input_files:
-            logger.warning(f"No image files found in {input_path}")
+            log.warning(f"No image files found in {input_path}")
             return
 
-        logger.info(f"Found {len(input_files)} image files to process")
+        log.info(f"Found {len(input_files)} image files to process")
 
         pipeline = Pipeline(error_handling="skip")
         steps = parse_steps(args)
         for step in steps:
             pipeline.add_step(step)
 
-        extractor = CharacterExtractor()
-
         contexts: list[ImageContext] = []
+
         for file_path in input_files:
-            # Load the caption tags
-            tags = load_existing_caption(file_path)
+            with log.section(f"Processing: {file_path.name}"):
 
-            # Extract characters from sections 0 and 1 ONLY
-            # Section 2 is reserved for NL and should not be processed for character extraction
-            tags_to_process = [tags[0], tags[1]]
-            modified_first_two, entries = extractor.extract(
-                tags_to_process, remove_from_sections=True
-            )
+                # Load the caption tags from existing .txt file
+                tags = load_existing_caption(file_path)
 
-            modified_tags = [modified_first_two[0], modified_first_two[1], tags[2]]
+                # Section 0: Prepended tags
+                if tags[0]:
+                    log.info(f"Prepended ({len(tags[0])}): {', '.join(tags[0][:10])}{'...' if len(tags[0]) > 10 else ''}")
+                else:
+                    log.info(f"Prepended: (none)")
+                
+                # Section 1: Main tags
+                if tags[1]:
+                    log.info(f"Main ({len(tags[1])}): {', '.join(tags[1][:10])}{'...' if len(tags[1]) > 10 else ''}")
+                else:
+                    log.info(f"Main: (none)")
+                
+                # Section 2: NL caption
+                if tags[2] and tags[2][0]:
+                    caption_preview = tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
+                    log.info(f"NL: {caption_preview}")
+                else:
+                    log.info(f"NL: (none)")
 
-            logger.debug(f"Loaded {len(tags[1]) if len(tags) > 1 else 0} tags for {file_path.name}")
-            if entries:
-                source_info = ", ".join(f"{e.tag}({e.source.name})" for e in entries)
-                logger.debug(f"Extracted {len(entries)} characters: {source_info}")
-                logger.debug(
-                    f"Removed character tags from hints, now {len(modified_tags[1]) if len(modified_tags) > 1 else 0} general tags"
+                # Combine sections 0 and 1 for processing
+                all_tags = tags[0] + tags[1]
+
+                # Extract rating FIRST (removes rating tags from all_tags)
+                tags_without_ratings, rating = extract_rating(all_tags)
+                
+                # Log extracted rating at INFO level
+                if rating:
+                    log.info(f"Extracted rating: {rating}")
+                else:
+                    log.info(f"Extracted rating: (none)")
+
+                # Extract character hints from tags without ratings
+                remaining_tags, character_tags  = extract_character_hints(tags_without_ratings)
+
+                # Log extracted characters at INFO level
+                if character_tags:
+                    log.info(f"Characters ({len(character_tags)}): {', '.join(character_tags)}")
+                else:
+                    log.info(f"Characters: (none)")
+
+                # Reconstruct the tag sections
+                modified_tags = [
+                    [],  # section 0 - prepended tags
+                    remaining_tags,  # section 1 - main tags
+                    tags[2] if len(tags) > 2 else [],  # section 2 - NL caption
+                ]
+
+                # Create the context
+                context = ImageContext(
+                    image_path=file_path,
+                    source_path=file_path,
+                    tags=modified_tags,
+                    character_tags=character_tags,
+                    rating=rating,
                 )
-
-            context = ImageContext(
-                image_path=file_path,
-                source_path=file_path,
-                tags=modified_tags,
-                character_entries=entries,
-            )
-            contexts.append(context)
+                contexts.append(context)
 
         results = pipeline.run(contexts)
 
-        logger.info(f"Processed {len(results)} images")
+        log.info(f"Processed {len(results)} images")
 
         for context in results:
             context.save_image()

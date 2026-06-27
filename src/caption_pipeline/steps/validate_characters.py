@@ -4,15 +4,15 @@ CharacterValidationStep: Validate that user-provided grounding tags contain vali
 
 from pathlib import Path
 
-from loguru import logger
+from caption_pipeline.utils.logging_utils import log
+
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.character_extractor import (
-    CharacterExtractor,
-    get_character_database,
-)
+from caption_pipeline.utils.tag_db import load_character_tags_only
+from caption_pipeline.utils.logging_utils import log
+
 
 
 @step_help(
@@ -40,6 +40,8 @@ class CharacterValidationStep(PipelineStep):
     Validate that user-provided grounding tags contain valid character references.
     """
 
+    SPECIAL_TAGS = {"original", "borrowed_character"}
+
     def __init__(
         self,
         output_file: Path | str = "./missing_characters.txt",
@@ -51,8 +53,8 @@ class CharacterValidationStep(PipelineStep):
             output_file: Path to the output file for missing characters
         """
         self.output_file = Path(output_file)
-        self._extractor = CharacterExtractor()
         self._missing: list[str] = []
+        self._character_tag_set: set[str] | None = None
 
     def name(self) -> str:
         """Return the step's unique identifier."""
@@ -62,72 +64,63 @@ class CharacterValidationStep(PipelineStep):
         """Always run (no pre-validation needed)."""
         return True
 
+    def _get_character_tag_set(self) -> set[str]:
+        """Lazy load the character tag set."""
+        if self._character_tag_set is None:
+            self._character_tag_set = load_character_tags_only()
+        return self._character_tag_set
+
+    def _is_valid_character_context(self, context: ImageContext) -> tuple[bool, str | None]:
+        """
+        Check if the context has valid character references.
+
+        Returns:
+            Tuple of (is_valid, reason)
+        """
+        # Check 1: Context has character tags from hints or AI
+        if context.has_characters():
+            return True, f"character tags: {', '.join(context.character_tags)}"
+
+        # Check 2: Unnamed/original character (user used 'original' or 'borrowed_character')
+        if context.has_unnamed_character():
+            return True, "unnamed/original character (user override)"
+
+        # Check 3: Check tags directly (in case character tags weren't extracted)
+        all_tags = context.get_tags(section=0) + context.get_tags(section=1)
+        character_tag_set = self._get_character_tag_set()
+
+        for tag in all_tags:
+            # Check if it's a special tag
+            if tag in self.SPECIAL_TAGS:
+                return True, f"special tag: '{tag}'"
+
+            # Check if it's in the character database
+            if tag in character_tag_set:
+                return True, f"character tag in database: '{tag}'"
+
+        # No valid character reference found
+        return False, "No character tag or user override found"
+
     def process(self, context: ImageContext) -> ImageContext | None:
         """
         Process a single context by validating its character tags.
         """
-        logger.debug(f"Processing: {context.image_path.name}")
+        with log.section(f"Processing: {context.image_path.name}"):
+            is_valid, reason = self._is_valid_character_context(context)
 
-        # Get tags from section 1 (main tags)
-        tags = context.get_tags(section=1)
-        # Also check section 0 (prepended tags)
-        prepended = context.get_tags(section=0)
-        all_tags = tags + prepended
-
-        # Check for existing character entries (already extracted at load time)
-        has_character_entry = bool(context.character_entries)
-
-        # Check for special tags (user overrides)
-        has_original = "original" in all_tags or "original" in tags
-        has_borrowed = "borrowed character" in all_tags or "borrowed character" in tags
-
-        # Check for character tags in the tags themselves (in case they weren't extracted)
-        has_character_tag = False
-        for tag in all_tags:
-            if self._extractor.is_character_tag(tag):
-                has_character_tag = True
-                break
-
-        # Determine if validation passes
-        is_valid = False
-        reason = None
-
-        if has_character_entry or has_character_tag:
-            is_valid = True
-        elif has_original:
-            is_valid = True
-            reason = "'original' user override"
-        elif has_borrowed:
-            is_valid = True
-            reason = "'borrowed character' user override"
-        else:
-            # Check if any tag exists in the database (last chance)
-            db = get_character_database()
-            for tag in all_tags:
-                normalized = tag.lower().replace(" ", "_").strip("_ ")
-                if normalized in db:
-                    is_valid = True
-                    break
-            
             if not is_valid:
-                reason = "No character tag or user override found"
+                log.warning(f"Missing character validation: {context.image_path.name} - {reason}")
+                if context.image_path.name not in self._missing:
+                    self._missing.append(context.image_path.name)
+            else:
+                if context.has_characters():
+                    log.debug(f"✓ Valid character(s) found for {context.image_path.name}: {', '.join(context.character_tags)}")
+                elif context.has_unnamed_character():
+                    log.debug(f"✓ Unnamed/original character for {context.image_path.name}")
+                else:
+                    log.debug(f"✓ Character reference found for {context.image_path.name}: {reason}")
 
-        if not is_valid:
-            logger.warning(f"Missing character validation: {context.image_path.name} - {reason}")
-            if context.image_path.name not in self._missing:
-                self._missing.append(context.image_path.name)
-        else:
-            if has_character_entry:
-                char_names = [e.tag for e in context.character_entries]
-                logger.debug(f"✓ Valid character(s) found for {context.image_path.name}: {', '.join(char_names)}")
-            elif has_original:
-                logger.debug(f"✓ 'original' user override for {context.image_path.name}")
-            elif has_borrowed:
-                logger.debug(f"✓ 'borrowed character' user override for {context.image_path.name}")
-            elif has_character_tag:
-                logger.debug(f"✓ Character tag found for {context.image_path.name}")
-
-        return context
+            return context
 
     def process_batch(self, contexts: list[ImageContext]) -> list[ImageContext]:
         """
@@ -152,13 +145,13 @@ class CharacterValidationStep(PipelineStep):
             with self.output_file.open("w") as f:
                 for filename in sorted(self._missing):
                     f.write(f"{Path(filename).stem}\n")
-            logger.info(f"Found {len(self._missing)} images missing character validation. Written to {self.output_file}")
+            log.info(f"Found {len(self._missing)} images missing character validation. Written to {self.output_file}")
         else:
             # Remove the file if it exists and is empty
             if self.output_file.exists():
                 self.output_file.unlink()
-                logger.debug(f"Removed empty output file: {self.output_file}")
-            logger.info("All images passed character validation")
+                log.debug(f"Removed empty output file: {self.output_file}")
+            log.info("All images passed character validation")
 
         return results
 

@@ -4,7 +4,7 @@ TagManipulateStep: Add, remove, reorder, or move tags.
 
 from typing import Literal
 
-from loguru import logger
+from caption_pipeline.utils.logging_utils import log
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
@@ -91,32 +91,31 @@ class TagManipulateStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Apply tag manipulation."""
-        logger.debug(f"Processing: {context.image_path.name}")
+        with log.section(f"Processing: {context.image_path.name}"):
+            current_tags = context.get_tags(section=self.section)
 
-        current_tags = context.get_tags(section=self.section)
+            if self.operation == "prepend":
+                new_tags = self._prepend_operation(current_tags)
+            elif self.operation == "append":
+                new_tags = self._append_operation(current_tags)
+            elif self.operation == "replace":
+                new_tags = self._replace_operation(current_tags)
+            elif self.operation == "remove":
+                new_tags = self._remove_operation(current_tags)
+            elif self.operation == "move":
+                new_tags = self._move_operation(current_tags)
+            else:
+                raise ValueError(f"Unknown operation: {self.operation}")
 
-        if self.operation == "prepend":
-            new_tags = self._prepend_operation(current_tags)
-        elif self.operation == "append":
-            new_tags = self._append_operation(current_tags)
-        elif self.operation == "replace":
-            new_tags = self._replace_operation(current_tags)
-        elif self.operation == "remove":
-            new_tags = self._remove_operation(current_tags)
-        elif self.operation == "move":
-            new_tags = self._move_operation(current_tags)
-        else:
-            raise ValueError(f"Unknown operation: {self.operation}")
+            # Remove duplicates if requested
+            if self.remove_duplicates:
+                new_tags = self._remove_duplicates_keep_order(new_tags)
 
-        # Remove duplicates if requested
-        if self.remove_duplicates:
-            new_tags = self._remove_duplicates_keep_order(new_tags)
+            result = context.copy()
+            result.set_tags(new_tags, section=self.section)
 
-        result = context.copy()
-        result.set_tags(new_tags, section=self.section)
-
-        logger.debug(f"Applied {self.operation}: {len(current_tags)} -> {len(new_tags)} tags")
-        return result
+            log.debug(f"Applied {self.operation}: {len(current_tags)} -> {len(new_tags)} tags")
+            return result
 
     def _prepend_operation(self, current_tags: list[str]) -> list[str]:
         """Add tags to the beginning."""

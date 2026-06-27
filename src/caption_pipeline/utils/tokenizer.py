@@ -4,8 +4,9 @@ CLIP Tokenizer Wrapper.
 
 from pathlib import Path
 
-from loguru import logger
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+
+from caption_pipeline.utils.logging_utils import log
 
 _TOKENIZER: PreTrainedTokenizerBase | None = None
 
@@ -25,9 +26,9 @@ def get_tokenizer(model_path: Path = Path("./clip-vit-base-patch32/")) -> PreTra
     if _TOKENIZER is None:
         try:
             _TOKENIZER = AutoTokenizer.from_pretrained(str(model_path))
-            logger.info(f"Loaded CLIP tokenizer from {model_path}")
+            log.info(f"Loaded CLIP tokenizer from {model_path}")
         except Exception as e:
-            logger.error(f"Failed to load tokenizer: {e}")
+            log.error(f"Failed to load tokenizer: {e}")
             raise
 
     return _TOKENIZER
