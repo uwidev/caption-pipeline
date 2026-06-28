@@ -1,5 +1,7 @@
 """
 TagResolveStep: Manage CLIP token limits.
+
+Do not do this if you your model uses a non-CLIP text encoder, like Anima.
 """
 
 from math import ceil
