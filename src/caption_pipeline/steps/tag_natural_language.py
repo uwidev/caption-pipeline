@@ -23,15 +23,44 @@ from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.prompts import TORIIGATE_PROMPTS
 from caption_pipeline.utils.llama_server import LlamaServer, LlamaServerConfig
-from caption_pipeline.utils.logging_utils import (
-    log,
-    log_list_truncated,
-    log_truncated,
-    section,
-)
+from caption_pipeline.utils.logging_utils import log, log_list_truncated, log_truncated, section
 from caption_pipeline.utils.tag_db import get_display_name, query_character
 
 load_dotenv()
+
+# Server defaults
+DEFAULT_SERVER_PORT = 8081
+DEFAULT_SERVER_HOST = "127.0.0.1"
+DEFAULT_SERVER_BINARY = "llama-server"
+DEFAULT_SERVER_N_GPU_LAYERS = 999
+DEFAULT_SERVER_FLASH_ATTN = True
+DEFAULT_SERVER_CONTEXT_SIZE = 262144
+DEFAULT_SERVER_IMAGE_MIN_TOKENS = 1024
+DEFAULT_SERVER_CACHE_TYPE_K = "q8_0"
+DEFAULT_SERVER_CACHE_TYPE_V = "q8_0"
+DEFAULT_SERVER_LOG_VERBOSITY = 2
+DEFAULT_SERVER_STARTUP_TIMEOUT = 60
+DEFAULT_SERVER_SHUTDOWN_TIMEOUT = 10
+DEFAULT_SERVER_CACHE_RAM = 0
+
+# API defaults
+DEFAULT_API_KEY = "not-needed"
+DEFAULT_MODEL = "torii-gate-0.5"
+
+# Caption defaults
+DEFAULT_CAPTION_TYPE = "short"
+DEFAULT_MAX_PIXELS = 1.0
+DEFAULT_MAX_TOKENS = 2048
+DEFAULT_TEMPERATURE = 0.5
+DEFAULT_TIMEOUT = 120
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_OUTPUT_SUFFIX = "-nl.txt"
+
+# System prompt
+SYSTEM_PROMPT = (
+    "You are image captioning expert. Describe user's picture "
+    "according to requested format and instructions."
+)
 
 
 @step_help(
@@ -48,80 +77,18 @@ for all images in the batch and stops after processing completes.""",
             "help": "Caption format",
             "default": "short",
         },
-        {
-            "flag": "--no-tags",
-            "help": "Don't include booru tags in the prompt",
-            "default": "include tags",
-        },
-        {"flag": "--no-names", "help": "Don't use character names", "default": "use names"},
-        {
-            "flag": "--no-char-list",
-            "help": "Don't include character list in prompt",
-            "default": "include list",
-        },
-        {
-            "flag": "--no-char-tags",
-            "help": "Don't include character popular tags",
-            "default": "include tags",
-        },
-        {
-            "flag": "--no-char-descr",
-            "help": "Don't include character descriptions",
-            "default": "include descriptions",
-        },
-        {
-            "flag": "--max-pixels FLOAT",
-            "help": "Max pixels for image resizing (in millions)",
-            "default": "1.0",
-        },
-        {"flag": "--max-tokens INT", "help": "Max tokens in response", "default": "2048"},
-        {"flag": "--temperature FLOAT", "help": "Temperature for generation", "default": "0.5"},
-        {"flag": "--timeout INT", "help": "API timeout in seconds", "default": "120"},
-        {
-            "flag": "--no-require-tags",
-            "help": "Run without requiring tags (image-only captioning)",
-            "default": "require tags",
-        },
-        {"flag": "--retries INT", "help": "Max retries for invalid responses", "default": "3"},
-        {
-            "flag": "--force",
-            "help": "Force regenerate NL caption even if one exists",
-            "default": "skip if exists",
-        },
         {"flag": "--model-path PATH", "help": "Path to ToriiGate .gguf model file"},
         {"flag": "--mmproj-path PATH", "help": "Path to ToriiGate mmproj file"},
-        {"flag": "--server-port INT", "help": "Server port", "default": "8081"},
-        {"flag": "--server-host HOST", "help": "Server host", "default": "127.0.0.1"},
-        {"flag": "--server-binary PATH", "help": "llama-server binary", "default": "llama-server"},
-        {"flag": "--server-log-file PATH", "help": "Log file for server output"},
-        {
-            "flag": "--server-n-gpu-layers INT",
-            "help": "Number of GPU layers (-ngl)",
-            "default": "999",
-        },
-        {
-            "flag": "--server-context-size INT",
-            "help": "Context size (-c)",
-            "default": "262144",
-        },
-        {
-            "flag": "--server-image-min-tokens INT",
-            "help": "Minimum image tokens",
-            "default": "1024",
-        },
-        {"flag": "--server-startup-timeout INT", "help": "Server startup timeout", "default": "60"},
-        {
-            "flag": "--server-shutdown-timeout INT",
-            "help": "Server shutdown timeout",
-            "default": "10",
-        },
+        {"flag": "--port INT", "help": "Server port", "default": "8081"},
+        {"flag": "--host HOST", "help": "Server host", "default": "127.0.0.1"},
+        {"flag": "--log-file PATH", "help": "Log file for server output"},
         {
             "flag": "--no-auto-server",
             "help": "Don't manage server lifecycle (assume server is already running)",
             "default": "auto-manage",
         },
     ],
-    example="tag:nl --type long --temperature 0.7 --force",
+    example="tag:nl --type long --model-path ./torii-gate.gguf --mmproj-path ./mmproj.gguf",
 )
 class TagNaturalLanguageStep(PipelineStep):
     """
@@ -149,24 +116,14 @@ class TagNaturalLanguageStep(PipelineStep):
         # Server configuration
         model_path: Path | None = None,
         mmproj_path: Path | None = None,
-        server_port: int = 8081,
-        server_host: str = "127.0.0.1",
-        server_binary: str = "llama-server",
-        server_startup_timeout: int = 60,
-        server_shutdown_timeout: int = 10,
+        server_port: int = DEFAULT_SERVER_PORT,
+        server_host: str = DEFAULT_SERVER_HOST,
         server_log_file: Path | None = None,
-        server_n_gpu_layers: int = 999,
-        server_flash_attn: bool = True,
-        server_context_size: int = 262144,
-        server_image_min_tokens: int = 1024,
-        server_cache_type_k: str = "q8_0",
-        server_cache_type_v: str = "q8_0",
-        server_log_verbosity: int = 2,
         auto_manage_server: bool = True,
         # API configuration
         api_url: str | None = None,
-        api_key: str = "not-needed",
-        model: str = "torii-gate-0.5",
+        api_key: str = DEFAULT_API_KEY,
+        model: str = DEFAULT_MODEL,
         # Caption configuration
         caption_type: Literal[
             "short",
@@ -179,26 +136,27 @@ class TagNaturalLanguageStep(PipelineStep):
             "min_structured_md",
             "min_structured_json",
             "chroma-style",
-        ] = "short",
+        ] = DEFAULT_CAPTION_TYPE,
         use_character_names: bool = True,
         include_tags: bool = True,
         include_character_list: bool = True,
         include_character_tags: bool = True,
         include_character_descriptions: bool = True,
-        max_pixels: float = 1.0,
-        max_tokens: int = 2048,
-        temperature: float = 0.5,
-        timeout: int = 120,
+        max_pixels: float = DEFAULT_MAX_PIXELS,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        temperature: float = DEFAULT_TEMPERATURE,
+        timeout: int = DEFAULT_TIMEOUT,
         force: bool = False,
-        output_suffix: str = "-nl.txt",
+        output_suffix: str = DEFAULT_OUTPUT_SUFFIX,
         require_tags: bool = True,
-        max_retries: int = 3,
+        max_retries: int = DEFAULT_MAX_RETRIES,
         validate_response: bool = True,
-        server_cache_ram: int = 0,
         debug: bool = False,
     ) -> None:
         """
         Initialize the natural language generation step.
+
+        All server configuration beyond the essentials uses defaults.
         """
         # Server configuration
         self.model_path = model_path
@@ -217,18 +175,21 @@ class TagNaturalLanguageStep(PipelineStep):
 
         self.server_port = server_port
         self.server_host = server_host
-        self.server_binary = server_binary
-        self.server_startup_timeout = server_startup_timeout
-        self.server_shutdown_timeout = server_shutdown_timeout
         self.server_log_file = server_log_file
-        self.server_n_gpu_layers = server_n_gpu_layers
-        self.server_flash_attn = server_flash_attn
-        self.server_context_size = server_context_size
-        self.server_image_min_tokens = server_image_min_tokens
-        self.server_cache_type_k = server_cache_type_k
-        self.server_cache_type_v = server_cache_type_v
-        self.server_log_verbosity = server_log_verbosity
         self.auto_manage_server = auto_manage_server
+
+        # Server defaults (not configurable via CLI)
+        self.server_binary = DEFAULT_SERVER_BINARY
+        self.server_n_gpu_layers = DEFAULT_SERVER_N_GPU_LAYERS
+        self.server_flash_attn = DEFAULT_SERVER_FLASH_ATTN
+        self.server_context_size = DEFAULT_SERVER_CONTEXT_SIZE
+        self.server_image_min_tokens = DEFAULT_SERVER_IMAGE_MIN_TOKENS
+        self.server_cache_type_k = DEFAULT_SERVER_CACHE_TYPE_K
+        self.server_cache_type_v = DEFAULT_SERVER_CACHE_TYPE_V
+        self.server_log_verbosity = DEFAULT_SERVER_LOG_VERBOSITY
+        self.server_startup_timeout = DEFAULT_SERVER_STARTUP_TIMEOUT
+        self.server_shutdown_timeout = DEFAULT_SERVER_SHUTDOWN_TIMEOUT
+        self.server_cache_ram = DEFAULT_SERVER_CACHE_RAM
 
         # API configuration
         self.api_url = api_url or f"http://{server_host}:{server_port}/v1/chat/completions"
@@ -251,14 +212,10 @@ class TagNaturalLanguageStep(PipelineStep):
         self.require_tags = require_tags
         self.max_retries = max_retries
         self.validate_response = validate_response
-        self.server_cache_ram = server_cache_ram
 
         # Runtime state
         self._server: LlamaServer | None = None
-        self._system_prompt: str = (
-            "You are image captioning expert. Describe user's picture "
-            "according to requested format and instructions."
-        )
+        self._system_prompt = SYSTEM_PROMPT
         self.debug = debug
 
     def name(self) -> str:
@@ -343,7 +300,6 @@ class TagNaturalLanguageStep(PipelineStep):
             # Server is managed externally
             for idx in valid_indices:
                 context = contexts[idx]
-                log.info(f"Processing: {context.image_path.name}")
                 try:
                     result = self.process(context)
                     if result is not None:
@@ -375,7 +331,7 @@ class TagNaturalLanguageStep(PipelineStep):
         The server is assumed to be already running when this is called.
         """
         # Prepare metadata for THIS image (logs appear here)
-        with section("Processing: {context.image_path}"):
+        with section(f"Processing: {context.image_path.name}"):
             metadata = self._prepare_metadata(context)
 
             for attempt in range(self.max_retries):
@@ -624,8 +580,6 @@ class TagNaturalLanguageStep(PipelineStep):
 
     def _prepare_metadata(self, context: ImageContext) -> dict[str, Any]:
         """Prepare metadata for the prompt."""
-        log.info(f"Processing: {context.image_path.name}")
-
         tags = context.get_tags(section=1)
 
         if not tags and not self.require_tags:

@@ -641,41 +641,13 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
             case "tag:natural_language" | "tag:nl":
                 # Natural language captioning with ToriiGate
                 caption_type = "short"
-                use_names = True
-                include_tags = True
-                include_char_list = True
-                include_char_tags = True
-                include_char_descr = True
-                max_pixels = 1.0
-                max_tokens = 2048
-                temperature = 0.5
-                timeout = 120
-                require_tags = True
-                max_retries = 3
-                force = False
-                api_url = None
-                api_key = "not-needed"
-                model = "torii-gate-0.5"
-                output_suffix = "-nl.txt"
-
-                # Server management options (updated for LlamaServer)
                 model_path = None
                 mmproj_path = None
                 server_port = 8081
                 server_host = "127.0.0.1"
-                server_binary = "llama-server"
-                auto_manage_server = True
-                server_startup_timeout = 60
-                server_shutdown_timeout = 10
                 server_log_file = None
-                server_n_gpu_layers = 999
-                server_flash_attn = True
-                server_context_size = 262144
-                server_image_min_tokens = 1024
-                server_cache_type_k = "q8_0"
-                server_cache_type_v = "q8_0"
-                server_log_verbosity = 0
-                server_cache_ram = 0
+                auto_manage_server = True
+                debug = args.debug
 
                 i = 1
                 while i < len(parts):
@@ -683,162 +655,41 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--type":
                             caption_type = parts[i + 1]
                             i += 2
-                        case "--no-names":
-                            use_names = False
-                            i += 1
-                        case "--no-tags":
-                            include_tags = False
-                            i += 1
-                        case "--no-char-list":
-                            include_char_list = False
-                            i += 1
-                        case "--no-char-tags":
-                            include_char_tags = False
-                            i += 1
-                        case "--no-char-descr":
-                            include_char_descr = False
-                            i += 1
-                        case "--max-pixels":
-                            max_pixels = float(parts[i + 1])
-                            i += 2
-                        case "--max-tokens":
-                            max_tokens = int(parts[i + 1])
-                            i += 2
-                        case "--temperature":
-                            temperature = float(parts[i + 1])
-                            i += 2
-                        case "--timeout":
-                            timeout = int(parts[i + 1])
-                            i += 2
-                        case "--no-require-tags":
-                            require_tags = False
-                            i += 1
-                        case "--retries":
-                            max_retries = int(parts[i + 1])
-                            i += 2
-                        case "--force":
-                            force = True
-                            i += 1
-                        case "--api-url":
-                            api_url = parts[i + 1]
-                            i += 2
-                        case "--api-key":
-                            api_key = parts[i + 1]
-                            i += 2
-                        case "--model":
-                            model = parts[i + 1]
-                            i += 2
-                        case "--output-suffix":
-                            output_suffix = parts[i + 1]
-                            i += 2
-                        # Server options (updated for LlamaServer)
                         case "--model-path":
                             model_path = Path(parts[i + 1])
                             i += 2
                         case "--mmproj-path":
                             mmproj_path = Path(parts[i + 1])
                             i += 2
-                        case "--server-port":
+                        case "--port":
                             server_port = int(parts[i + 1])
                             i += 2
-                        case "--server-host":
+                        case "--host":
                             server_host = parts[i + 1]
                             i += 2
-                        case "--server-binary":
-                            server_binary = parts[i + 1]
+                        case "--log-file":
+                            server_log_file = Path(parts[i + 1])
                             i += 2
                         case "--no-auto-server":
                             auto_manage_server = False
                             i += 1
-                        case "--server-startup-timeout":
-                            server_startup_timeout = int(parts[i + 1])
-                            i += 2
-                        case "--server-shutdown-timeout":
-                            server_shutdown_timeout = int(parts[i + 1])
-                            i += 2
-                        case "--server-log-file":
-                            server_log_file = Path(parts[i + 1])
-                            i += 2
-                        case "--server-n-gpu-layers":
-                            server_n_gpu_layers = int(parts[i + 1])
-                            i += 2
-                        case "--server-flash-attn":
-                            server_flash_attn = parts[i + 1].lower() == "true"
-                            i += 2
-                        case "--server-context-size":
-                            server_context_size = int(parts[i + 1])
-                            i += 2
-                        case "--server-image-min-tokens":
-                            server_image_min_tokens = int(parts[i + 1])
-                            i += 2
-                        case "--server-cache-type-k":
-                            server_cache_type_k = parts[i + 1]
-                            i += 2
-                        case "--server-cache-type-v":
-                            server_cache_type_v = parts[i + 1]
-                            i += 2
-                        case "--server-log-verbosity":
-                            server_log_verbosity = int(parts[i + 1])
-                            i += 2
-                        case "--server-cache-ram":
-                            server_cache_ram = int(parts[i + 1])
-                            i += 2
                         case _:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
-                                f"Available flags: --type, --no-names, --no-tags, --no-char-list, "
-                                f"--no-char-tags, --no-char-descr, --max-pixels, --max-tokens, "
-                                f"--temperature, --timeout, --no-require-tags, --retries, --force, "
-                                f"--api-url, --api-key, --model, --output-suffix, --model-path, "
-                                f"--mmproj-path, --server-port, --server-host, --server-binary, "
-                                f"--no-auto-server, --server-startup-timeout, --server-shutdown-timeout, "
-                                f"--server-log-file, --server-n-gpu-layers, --server-flash-attn, "
-                                f"--server-context-size, --server-image-min-tokens, --server-cache-type-k, "
-                                f"--server-cache-type-v, --server-log-verbosity, --server-cache-ram"
+                                f"Available flags: --type, --model-path, --mmproj-path, "
+                                f"--port, --host, --log-file, --no-auto-server"
                             )
 
-                # Create step with all parameters
                 steps.append(
                     TagNaturalLanguageStep(
-                        # Server configuration
+                        caption_type=caption_type,
                         model_path=model_path,
                         mmproj_path=mmproj_path,
                         server_port=server_port,
                         server_host=server_host,
-                        server_binary=server_binary,
-                        server_startup_timeout=server_startup_timeout,
-                        server_shutdown_timeout=server_shutdown_timeout,
                         server_log_file=server_log_file,
-                        server_n_gpu_layers=server_n_gpu_layers,
-                        server_flash_attn=server_flash_attn,
-                        server_context_size=server_context_size,
-                        server_image_min_tokens=server_image_min_tokens,
-                        server_cache_type_k=server_cache_type_k,
-                        server_cache_type_v=server_cache_type_v,
-                        server_log_verbosity=server_log_verbosity,
                         auto_manage_server=auto_manage_server,
-                        # API configuration
-                        api_url=api_url,
-                        api_key=api_key,
-                        model=model,
-                        # Caption configuration
-                        caption_type=caption_type,
-                        use_character_names=use_names,
-                        include_tags=include_tags,
-                        include_character_list=include_char_list,
-                        include_character_tags=include_char_tags,
-                        include_character_descriptions=include_char_descr,
-                        max_pixels=max_pixels,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        timeout=timeout,
-                        force=force,
-                        output_suffix=output_suffix,
-                        require_tags=require_tags,
-                        max_retries=max_retries,
-                        validate_response=True,
-                        server_cache_ram=server_cache_ram,
-                        debug=args.debug,
+                        debug=debug,
                     )
                 )
 
