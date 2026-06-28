@@ -9,7 +9,7 @@ from math import ceil
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.logging_utils import log, log_truncated
 from caption_pipeline.utils.tokenizer import get_tokenizer
 
 
@@ -232,8 +232,8 @@ class TagResolveStep(PipelineStep):
                     )
             
             if removed:
-                log.info(f"  Removed: {len(removed)} tags")
-                log.debug(f"    {', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
+                tags_str = ", ".join(removed[:10])
+                log_truncated(f"Removed ({len(removed)})", tags_str, max_len=64)
             
             if added:
                 log.info(f"  Added: {len(added)} tags")

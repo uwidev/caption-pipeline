@@ -13,7 +13,7 @@ from transformers import PreTrainedTokenizerBase
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.logging_utils import log, log_list_truncated, log_scored_list_truncated
 from caption_pipeline.utils.tag_db import (
     get_character_count_from_tag_confidences,
     load_tag_databases,
@@ -130,11 +130,8 @@ class TagGenerationStep(PipelineStep):
                 if score > self.character_threshold
             ]
 
-            # Log user tags at DEBUG level
             if user_tags:
-                log.debug(f"User tags ({len(user_tags)}):")
-                for i, tag in enumerate(sorted(user_tags)):
-                    log.debug(f"{i + 1:3d}. {tag}")
+                log_list_truncated(user_tags, "User tags", level="debug")
 
             # Log user rating at DEBUG level
             if user_rating:
@@ -149,9 +146,7 @@ class TagGenerationStep(PipelineStep):
             below_threshold = [(tag, conf) for tag, conf in sorted_ai if conf < self.threshold]
 
             if above_threshold:
-                log.debug(f"Tags above threshold ({len(above_threshold)}):")
-                for i, (tag, conf) in enumerate(above_threshold):
-                    log.debug(f"{i + 1:3d}. {tag}: {conf:.3f}")
+                log_scored_list_truncated(above_threshold, "Tags above threshold")
             else:
                 log.debug(f"No tags above threshold ({self.threshold})")
 
@@ -161,19 +156,14 @@ class TagGenerationStep(PipelineStep):
                     (tag, conf) for tag, conf in below_threshold if conf >= self.threshold - 0.1
                 ]
                 if near_threshold:
-                    log.debug(f"Tags near threshold ({len(near_threshold)}):")
-                    i = len(above_threshold)
-                    for tag, conf in near_threshold[:10]:
-                        log.debug(f"{i + 1:3d}. {tag}: {conf:.3f}")
-                        i += 1
+                    log_scored_list_truncated(near_threshold[:10], "Tags near threshold")
                     if len(near_threshold) > 10:
                         log.debug(f"... and {len(near_threshold) - 10} more near threshold")
+
                 else:
                     # If no tags near threshold, show the highest below threshold
                     highest_below = below_threshold[:5]
-                    log.debug("Highest below threshold:")
-                    for tag, conf in highest_below:
-                        log.debug(f"{tag}: {conf:.3f}")
+                    log_scored_list_truncated(highest_below, "Highest below threshold")
 
             # Log AI rating at DEBUG level
             if ai_rating:
@@ -181,11 +171,13 @@ class TagGenerationStep(PipelineStep):
 
             # Log ALL AI character results at DEBUG level (no filtering)
             if ai_characters:
-                log.debug(f"AI-inferenced characters ({len(ai_characters)}):")
                 sorted_chars = sorted(ai_characters.items(), key=lambda x: -x[1])
-                for char, conf in sorted_chars:
-                    marker = "✓" if conf >= self.character_threshold else " "
-                    log.debug(f"{char}: {conf:.3f} {marker}")
+                # Format with markers
+                formatted = [
+                    f"{char}: {conf:.3f} {'✓' if conf >= self.character_threshold else ' '}"
+                    for char, conf in sorted_chars
+                ]
+                log_list_truncated(formatted, "AI-inferenced characters", max_items=10, level="debug")
 
             # Combine general tags (using regular threshold)
             combined_general = self._combine_tags(
@@ -252,35 +244,31 @@ class TagGenerationStep(PipelineStep):
                 if user_rating == ai_rating:
                     log.info(f"Rating: {user_rating} (user and AI match)")
                 else:
-                    log.info(f"Rating: {user_rating} (user) vs {ai_rating} (AI) - using user rating")
+                    log.info(
+                        f"Rating: {user_rating} (user) vs {ai_rating} (AI) - using user rating"
+                    )
             elif user_rating:
                 log.info(f"Rating: {user_rating} (user provided)")
             elif ai_rating:
                 log.info(f"Rating: {ai_rating} (AI inferred)")
 
             if kept:
-                log.info(f"Kept: {len(kept)} tags")
-                log.debug(f"{', '.join(kept)}")
+                log_list_truncated(kept, "Kept")
 
             if added_by_ai:
-                log.info(f"Added by AI: {len(added_by_ai)} tags")
-                log.debug(f"{', '.join(added_by_ai)}")
+                log_list_truncated(added_by_ai, "Added by AI")
 
             if removed:
-                log.info(f"Removed: {len(removed)} tags (below threshold or blacklisted)")
-                log.debug(f"{', '.join(removed)}")
+                log_list_truncated(removed, "Removed by AI")
 
             if kept_chars:
-                log.info(f"Characters kept: {', '.join(kept_chars)}")
+                log_list_truncated(kept_chars, "Kept characters")
 
             if added_chars:
-                log.info(f"Characters added: {', '.join(added_chars)}")
+                log_list_truncated(added_chars, "Characters added")
 
-            # Show final tags at DEBUG level
             if final_tags:
-                log.debug(f"Final tags ({len(final_tags)}):")
-                for i, tag in enumerate(final_tags):
-                    log.debug(f"{i + 1:>3d}. {tag}")
+                log_list_truncated(final_tags, "Final tags")
 
             # Build result
             result = context.copy()
@@ -533,11 +521,6 @@ class TagGenerationStep(PipelineStep):
 
         if cls._tokenizer is None:
             cls._tokenizer = get_tokenizer()
-
-        log.debug(
-            f"Loaded {len(cls._general_tags)} general tags and "
-            f"{len(cls._character_tags)} character tags"
-        )
 
     # =========================================================================
     # AI Inference

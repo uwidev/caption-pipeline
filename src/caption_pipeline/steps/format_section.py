@@ -7,7 +7,7 @@ from pathlib import Path
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.steps.format_base import BaseFormatStep
-from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.logging_utils import log, log_truncated
 
 
 @step_help(
@@ -17,11 +17,14 @@ from caption_pipeline.utils.logging_utils import log
 
 Sections:
 - Section 0: Prepended tags (delimited by delimiter)
-- Section 1: Main tags (delimited by delimiter)
+- Section 1: Main tags (delimited by delimiter) - automatically includes:
+  - Rating (if present)
+  - Special tags (original, borrowed_character)
+  - Character tags (added back from context.character_tags)
+  - General tags (everything else)
 - Section 2: Natural language caption (raw text, delimiter ignored)
 
-For section 1 (main tags), the order follows the original script:
-Rating → Character tags → General tags
+The order for section 1 is: Rating → Special Tags → Character Tags → General Tags
 
 This is useful for extracting just the NL caption or just the tags for
 further processing or validation.""",
@@ -87,15 +90,12 @@ class FormatSectionStep(BaseFormatStep):
     def process(self, context: ImageContext) -> ImageContext | None:
         """Output the specified section."""
         with log.section(f"Processing: {context.image_path.name}"):
-            tags = context.get_tags(self.section)
+            # Build ordered tags and get breakdown
+            tags, breakdown = self._build_ordered_tags(context)
 
             if not tags:
                 log.debug(f"Section {self.section} is empty - skipping")
                 return context
-
-            # Apply ordering for section 1 (main tags)
-            if self.section == 1:
-                tags = self._order_tags(tags, context)
 
             # Format the output based on section
             if self.section == 2:
@@ -109,11 +109,14 @@ class FormatSectionStep(BaseFormatStep):
                 # Sections 0 and 1 are tags - delimited
                 output = self._format_tags(tags)
 
+            # Log breakdown
+            self._log_breakdown(breakdown)
+
             # Save to disk
             output_path = self._save_output(context, output)
 
-            # Log results
-            self._log_output(context, output, output_path)
+            # Log output with truncation
+            log_truncated("Written", output, max_len=64, level="info", continuation_level="debug")
 
             # Store result
             result = context.copy()

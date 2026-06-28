@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from tqdm import tqdm
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
@@ -228,14 +227,8 @@ class TagNaturalLanguageFilterStep(PipelineStep):
         with OllamaManager(config) as manager:
             self._manager = manager
 
-            iterator = tqdm(
-                valid_contexts,
-                desc="Filtering NL captions",
-                unit="img",
-                disable=not show_progress,
-            )
-
-            for context in iterator:
+            for context in valid_contexts:
+                log.info(f"  Processing: {context.image_path.name}")
                 # Each process() call uses the already-loaded model
                 result: ImageContext | None = self.process(context)
                 if result is not None:

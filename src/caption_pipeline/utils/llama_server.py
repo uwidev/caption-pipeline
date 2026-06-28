@@ -15,7 +15,7 @@ from typing import Self
 
 import requests
 
-from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.logging_utils import log, log_list_truncated
 
 
 class LlamaServerError(Exception):
@@ -129,7 +129,9 @@ class LlamaServer:
             raise LlamaServerError("Server configuration is invalid - check model and mmproj paths")
 
         cmd = self.config.build_command()
-        log.info(f"Starting llama-server: {' '.join(cmd)}")
+        log.info(f"Starting llama-server")
+        args = [f"{cmd[i]} {cmd[i+1]}" for i in range(1, len(cmd)-1, 2)]
+        log_list_truncated(args, "Arguments", max_items=-1)
 
         # Prepare output destinations
         stdout_dest, stderr_dest = self._get_output_destinations()

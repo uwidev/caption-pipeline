@@ -34,7 +34,11 @@ from caption_pipeline.utils.llama_server import (
 from caption_pipeline.utils.model_manager import (
     ModelManager
 )
-from caption_pipeline.utils.logging_utils import IndentedLogger, log
+from caption_pipeline.utils.logging_utils import (
+    IndentedLogger,
+    log,
+    log_truncated,
+)
 
 __all__ = [
     # tag_db
@@ -62,7 +66,8 @@ __all__ = [
     "LlamaServer",
     "LlamaServerConfig",
     "ModelManager",
-    #Logging
+    # Logging
     "IndentedLogger",
     "log",
+    "log_truncated",
 ]

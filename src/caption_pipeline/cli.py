@@ -14,8 +14,9 @@ from caption_pipeline.core import PipelineStep, format_step_help, get_step_help
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.pipeline import Pipeline
 from caption_pipeline.steps.debug import DebugStep
-from caption_pipeline.steps.filter_danbooru import FilterDanbooruStep
-from caption_pipeline.steps.filter_overlap import FilterOverlapStep
+from caption_pipeline.steps.fix_danbooru import FixDanbooruStep
+from caption_pipeline.steps.fix_overlap import FixOverlapStep
+from caption_pipeline.steps.fix_counts import FixCountsStep
 from caption_pipeline.steps.format_join import FormatJoinStep
 from caption_pipeline.steps.format_section import FormatSectionStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
@@ -27,7 +28,7 @@ from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.utils import (
     load_tag_databases,
 )
-from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.logging_utils import log, log_truncated
 
 # Image MIME types supported
 SUPPORTED_IMAGE_MIMES: set[str] = {
@@ -413,8 +414,10 @@ def get_all_step_classes() -> list[type]:
         TagNaturalLanguageFilterStep,
         FormatJoinStep,
         FormatSectionStep,
-        FilterDanbooruStep,
-        FilterOverlapStep,
+        CharacterValidationStep,
+        FixOverlapStep,
+        FixCountsStep,
+        FixDanbooruStep,
         DebugStep,
     ]
 
@@ -449,7 +452,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                     )
                 )
 
-            case "filter:danbooru_only" | "filter:danbooru" | "filter:db":
+            case "fix:danbooru_only" | "fix:danbooru" | "fix:db":
                 whitelist = []
                 section = 1
 
@@ -469,13 +472,13 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             )
 
                 steps.append(
-                    FilterDanbooruStep(
+                    FixDanbooruStep(
                         whitelist=whitelist,
                         section=section,
                     )
                 )
 
-            case "filter:drop_overlap" | "filter:overlap" | "filter:drop":
+            case "fix:overlap" | "fix:drop":
                 section = -1
                 keep_scored = False
                 keep_hints = False
@@ -499,10 +502,31 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             )
                 
                 steps.append(
-                    FilterOverlapStep(
+                    FixOverlapStep(
                         section=section,
                         keep_scored=keep_scored,
                         keep_hints=keep_hints,
+                    )
+                )
+
+            case "fix:counts" | "fix:cnt":
+                section = 1
+
+                i = 1
+                while i < len(parts):
+                    match parts[i]:
+                        case "--section":
+                            section = int(parts[i + 1])
+                            i += 2
+                        case _:
+                            raise ValueError(
+                                f"Unknown flag '{parts[i]}' for step '{step_name}'. "
+                                f"Available flags: --section"
+                            )
+
+                steps.append(
+                    FixCountsStep(
+                        section=section,
                     )
                 )
 
@@ -922,10 +946,6 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 output_dir = Path("./done/")
                 tag_suffix = ""
                 deduplicate = True
-                clean = True
-                save_empty = False
-                resolve_counts = True
-                include_character_tags = True
                 use_spaces = True
 
                 i = 1
@@ -943,18 +963,6 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--no-deduplicate":
                             deduplicate = False
                             i += 1
-                        case "--no-clean":
-                            clean = False
-                            i += 1
-                        case "--save-empty":
-                            save_empty = True
-                            i += 1
-                        case "--no-resolve-counts":
-                            resolve_counts = False
-                            i += 1
-                        case "--no-character-tags":
-                            include_character_tags = False
-                            i += 1
                         case "--no-spaces":
                             use_spaces = False
                             i += 1
@@ -962,8 +970,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
                                 f"Available flags: --delimiter, --output-dir, --tag-suffix, "
-                                f"--no-deduplicate, --no-clean, --save-empty, --no-resolve-counts, "
-                                f"--no-character-tags, --no-spaces"
+                                f"--no-deduplicate, --no-spaces"
                             )
 
                 steps.append(
@@ -972,10 +979,6 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         output_dir=output_dir,
                         tag_suffix=tag_suffix,
                         deduplicate_tags=deduplicate,
-                        clean_tags=clean,
-                        save_empty=save_empty,
-                        resolve_counts=resolve_counts,
-                        include_character_tags=include_character_tags,
                         use_spaces=use_spaces,
                     )
                 )
@@ -1158,9 +1161,8 @@ Use --help-steps to see detailed step reference.
 
                 # Section 0: Prepended tags
                 if tags[0]:
-                    log.info(
-                        f"Prepended ({len(tags[0])}): {', '.join(tags[0][:10])}{'...' if len(tags[0]) > 10 else ''}"
-                    )
+                    tags_str = ", ".join(tags[0])
+                    log_truncated(f"Prepended ({len(tags[0])})", tags_str, max_len=64)
                 else:
                     log.info("Prepended: (none)")
 
