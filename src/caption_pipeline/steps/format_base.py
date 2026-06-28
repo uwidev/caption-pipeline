@@ -7,6 +7,7 @@ from typing import Any
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.step import PipelineStep
+from caption_pipeline.utils import log_list_truncated
 from caption_pipeline.utils.logging_utils import log
 
 
@@ -55,7 +56,7 @@ class BaseFormatStep(PipelineStep):
         Returns:
             Tuple of (ordered_tags, breakdown)
             - ordered_tags: List of ordered tags in display form
-            - breakdown: Dict with 'rating', 'special', 'characters', 'general' counts and previews
+            - tags: Dict with 'rating', 'special', 'characters', 'general' counts and previews
         """
         if self.section != 1:
             tags = context.get_tags(self.section)
@@ -110,18 +111,18 @@ class BaseFormatStep(PipelineStep):
     def _log_breakdown(self, breakdown: dict[str, Any]) -> None:
         """Log the tag breakdown."""
         if breakdown.get("rating"):
-            log.debug(f"  Rating: {breakdown['rating']}")
+            log.info(f"Rating: {breakdown['rating']}")
         
         if breakdown.get("special"):
-            log.debug(f"  Special: {', '.join(breakdown['special'][:5])}{'...' if len(breakdown['special']) > 5 else ''}")
+            log.info(f"Special: {', '.join(breakdown['special'][:5])}{'...' if len(breakdown['special']) > 5 else ''}")
         
         if breakdown.get("characters"):
             chars = breakdown['characters']
-            log.debug(f"  Characters ({len(chars)}): {', '.join(chars[:5])}{'...' if len(chars) > 5 else ''}")
+            log_list_truncated(chars, "Characters")
         
         if breakdown.get("general"):
             general = breakdown['general']
-            log.debug(f"  General ({len(general)}): {', '.join(general[:5])}{'...' if len(general) > 5 else ''}")
+            log_list_truncated(general, "General")
 
     def _format_tags(self, tags: list[str]) -> str:
         """Format tags with delimiter and spacing."""

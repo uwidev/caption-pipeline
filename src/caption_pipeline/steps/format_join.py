@@ -7,6 +7,7 @@ from pathlib import Path
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.steps.format_base import BaseFormatStep
+from caption_pipeline.utils import log_list_truncated
 from caption_pipeline.utils.logging_utils import (
     log,
     log_truncated,
@@ -95,17 +96,15 @@ class FormatJoinStep(BaseFormatStep):
 
         return result
 
-    def _format_section(self, tags: list[str]) -> tuple[str, dict]:
+    def _format_section(self, tags: list[str]) -> tuple[str, list[str]]:
         """
         Format a section's tags with delimiter and spacing.
 
         Returns:
-            Tuple of (formatted_string, breakdown)
+            Tuple of (formatted_string, tags)
         """
         if not tags:
-            return "", {"count": 0, "preview": []}
-
-        original_count = len(tags)
+            return "", []
 
         if self.deduplicate_tags:
             tags = self._deduplicate_tags_preserve_order(tags)
@@ -115,21 +114,14 @@ class FormatJoinStep(BaseFormatStep):
 
         formatted = ", ".join(tags)
 
-        return formatted, {
-            "original_count": original_count,
-            "count": len(tags),
-            "preview": tags[:5],
-        }
+        return formatted, tags
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Join and save the caption."""
         with section(f"Processing: {context.image_path.name}"):
             # === SECTION 0: Prepended tags ===
             section0, breakdown0 = self._format_section(context.tags[0])
-            if breakdown0["count"] > 0:
-                log.debug(
-                    f"  Prepended ({breakdown0['count']}): {', '.join(breakdown0['preview'])}{'...' if breakdown0['count'] > 5 else ''}"
-                )
+            log_list_truncated(breakdown0, "Prepended")
 
             # === SECTION 1: Main tags ===
             main_tags, breakdown1 = self._build_ordered_tags(context)

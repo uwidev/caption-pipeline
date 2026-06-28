@@ -16,6 +16,7 @@ from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.utils.logging_utils import (
     log,
     log_list_truncated,
+    log_scored_list_truncated,
     section,
 )
 from caption_pipeline.utils.tag_db import (

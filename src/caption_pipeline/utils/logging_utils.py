@@ -8,6 +8,17 @@ Provides:
 - log_list_truncated: Log lists with truncation
 - log_scored_list_truncated: Log scored lists with truncation
 - log: Direct access to loguru logger
+
+Logging is a redirection to this module to allow for context-
+aware indentation. All logging should use `log` to ensure
+proper indentation.
+
+Due to the redirection, it adds a frame to the stack frame.
+This results in the logging context to be from this module
+rather than the original caller. To fix that, we need to
+go up a frame by using `depth`. If it's a redirection on top
+of a redirection (see `log_scored_list_truncated()`), it adds
+two frames, so `depth=2`.
 """
 
 import sys
@@ -132,16 +143,15 @@ def log_truncated(
         level: Log level for the preview (default: "info")
         continuation_level: Log level for the remainder (default: "debug")
     """
-    if not content:
-        return
-
-    if len(content) <= max_len:
-        # depth=1: skip log_truncated, show caller (e.g., cli.py)
+    if level == continuation_level:
         getattr(logger.opt(depth=1), level)(f"{message}: {content}")
-    else:
-        preview = content[:max_len]
+
+    clen = len(content)
+    preview = content[:max_len]
+    getattr(logger.opt(depth=1), level)(f"{message}: {preview}{'...' if clen > max_len else ''}")
+
+    if clen > max_len:
         remainder = content[max_len:]
-        getattr(logger.opt(depth=1), level)(f"{message}: {preview}...")
         getattr(logger.opt(depth=1), continuation_level)(f"  {remainder}")
 
 
@@ -151,6 +161,7 @@ def log_list_truncated(
     max_items: int = 5,
     level: str = "info",
     continuation_level: str = "debug",
+    frame_depth: int = 1,
 ) -> None:
     """
     Log a numbered list with truncation.
@@ -164,22 +175,20 @@ def log_list_truncated(
         max_items: Maximum items to show before truncating (default: 5, -1 = show all)
         level: Log level for the header and visible items (default: "info")
         continuation_level: Log level for the continuation (default: "debug")
+        frame_depth: How much to go up stack frame for logging context (default: "1")
     """
-    if not items:
-        return
-
     total = len(items)
-    getattr(logger.opt(depth=1), level)(f"{message} ({total}):")
+    getattr(logger.opt(depth=frame_depth), level)(f"{message} ({total}):")
 
-    if total <= max_items or max_items == -1:
+    if total <= max_items or max_items == -1 or level == continuation_level:
         for i, item in enumerate(items, 1):
-            getattr(logger.opt(depth=1), level)(f"  {i:>3d}. {item}")
+            getattr(logger.opt(depth=frame_depth), level)(f"  {i:>3d}. {item}")
     else:
         for i, item in enumerate(items[:max_items], 1):
-            getattr(logger.opt(depth=1), level)(f"  {i:>3d}. {item}")
-        getattr(logger.opt(depth=1), level)(f"     ...")
+            getattr(logger.opt(depth=frame_depth), level)(f"  {i:>3d}. {item}")
+        getattr(logger.opt(depth=frame_depth), level)(f"     ...")
         for i, item in enumerate(items[max_items:], max_items + 1):
-            getattr(logger.opt(depth=1), continuation_level)(f"  {i:>3d}. {item}")
+            getattr(logger.opt(depth=frame_depth), continuation_level)(f"  {i:>3d}. {item}")
 
 
 def log_scored_list_truncated(
@@ -188,6 +197,7 @@ def log_scored_list_truncated(
     max_items: int = 5,
     level: str = "info",
     continuation_level: str = "debug",
+    frame_depth: int = 2,
 ) -> None:
     """
     Log a numbered list of scored items with truncation.
@@ -200,6 +210,7 @@ def log_scored_list_truncated(
         max_items: Maximum items to show before truncating (default: 5)
         level: Log level for the header and visible items (default: "info")
         continuation_level: Log level for the continuation (default: "debug")
+        frame_depth: How much to go up stack frame for logging context (default: "1")
     """
     if not items:
         return
@@ -211,6 +222,7 @@ def log_scored_list_truncated(
         max_items=max_items,
         level=level,
         continuation_level=continuation_level,
+        frame_depth=frame_depth,
     )
 
 

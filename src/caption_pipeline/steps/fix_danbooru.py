@@ -5,6 +5,7 @@ FixDanbooruStep: Fix tags to only keep danbooru tags.
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
+from caption_pipeline.utils import log_list_truncated
 from caption_pipeline.utils.logging_utils import log, section
 from caption_pipeline.utils.tag_db import load_character_tags_only, load_general_tags_only
 
@@ -161,10 +162,7 @@ class FixDanbooruStep(PipelineStep):
                     f"Danbooru: {total_original} tags → {total_fixed} tags ({removed} removed)"
                 )
 
-                # DEBUG: Show all removed tags
                 if all_removed_tags and removed > 0:
-                    log.debug(
-                        f"Removed tags ({len(all_removed_tags)}): {', '.join(sorted(all_removed_tags))}"
-                    )
+                    log_list_truncated(list(all_removed_tags), "Removed tags")
 
             return result
