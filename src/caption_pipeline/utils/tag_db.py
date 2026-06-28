@@ -36,12 +36,13 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
 
     general_tags: set[str] = set()
     character_tags: set[str] = set()
+    
+    # Track counts per source for logging
+    source_counts: dict[str, dict[str, int]] = {}
 
     # ============================================================
     # Source 1: tags_v0.9_13k.json (REQUIRED)
     # ============================================================
-    # Contains ALL danbooru tags in tag_map with tag_split indicating
-    # where general tags end and character tags begin
     pixai_path = Path("./tags_v0.9_13k.json")
     if pixai_path.exists():
         try:
@@ -52,12 +53,16 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     tag_list = list(data["tag_map"].keys())
 
                     if tag_split > 0 and tag_split <= len(tag_list):
-                        general_tags.update(tag_list[:tag_split])
-                        character_tags.update(tag_list[tag_split:])
-                        log.debug(
-                            f"Split {len(tag_list)} tags from tags_v0.9_13k.json: "
-                            f"{tag_split} general, {len(tag_list) - tag_split} character"
-                        )
+                        pixai_general = set(tag_list[:tag_split])
+                        pixai_character = set(tag_list[tag_split:])
+                        general_tags.update(pixai_general)
+                        character_tags.update(pixai_character)
+                        source_counts["tags_v0.9_13k.json"] = {
+                            "general": len(pixai_general),
+                            "series": 0,
+                            "character": len(pixai_character),
+                            "total": len(tag_list),
+                        }
                     else:
                         raise ValueError(
                             f"Invalid tag_split value: {tag_split}. "
@@ -74,9 +79,9 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     # ============================================================
     # Source 2: selected_tags.csv (OPTIONAL)
     # ============================================================
-    # Headers: tag_id, name, category, count
-    # Categories: 0=general, 4=character, 9=rating
     wd_path = Path("./selected_tags.csv")
+    wd_general: set[str] = set()
+    wd_character: set[str] = set()
     if wd_path.exists():
         try:
             with wd_path.open("r") as f:
@@ -87,10 +92,19 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     if not name:
                         continue
                     if category == "0":  # general
-                        general_tags.add(name)
+                        wd_general.add(name)
                     elif category == "4":  # character
-                        character_tags.add(name)
+                        wd_character.add(name)
                     # category 9 = rating (ignored for tags)
+            
+            general_tags.update(wd_general)
+            character_tags.update(wd_character)
+            source_counts["selected_tags.csv"] = {
+                "general": len(wd_general),
+                "series": 0,
+                "character": len(wd_character),
+                "total": len(wd_general) + len(wd_character),
+            }
         except Exception as e:
             log.warning(f"Failed to load selected_tags.csv: {e}")
     else:
@@ -99,15 +113,37 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     # ============================================================
     # Source 3: char_ip_map.json (OPTIONAL)
     # ============================================================
-    # Keys are character names
     char_ip_path = Path("./char_ip_map.json")
+    char_ip_characters: set[str] = set()
+    char_ip_series: set[str] = set()
     if char_ip_path.exists():
         try:
             with char_ip_path.open("r") as f:
                 data = json.load(f)
-                for key in data.keys():
+                for key, value in data.items():
+                    # Key is the character name
                     if key:
-                        character_tags.add(key)
+                        char_ip_characters.add(key)
+                    
+                    # Value is the IP/series name
+                    if value:
+                        # If value is a list of series, add each one
+                        if isinstance(value, list):
+                            for series in value:
+                                if series:
+                                    char_ip_series.add(series)
+                        elif isinstance(value, str):
+                            # If it's a single string, add it directly
+                            char_ip_series.add(value)
+            
+            character_tags.update(char_ip_characters)
+            general_tags.update(char_ip_series)
+            source_counts["char_ip_map.json"] = {
+                "general": 0,
+                "series": len(char_ip_series),
+                "character": len(char_ip_characters),
+                "total": len(char_ip_characters) + len(char_ip_series),
+            }
         except Exception as e:
             log.warning(f"Failed to load char_ip_map.json: {e}")
     else:
@@ -116,8 +152,8 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     # ============================================================
     # Source 4: booru_characters.csv (OPTIONAL)
     # ============================================================
-    # Contains character tags + aliases + skins with full data
     booru_path = Path("./booru_characters.csv")
+    booru_tags: set[str] = set()
     if booru_path.exists():
         try:
             with booru_path.open("r", encoding="utf-8") as f:
@@ -126,7 +162,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     # Main tag
                     tag = row.get("tag", "").strip()
                     if tag:
-                        character_tags.add(tag)
+                        booru_tags.add(tag)
 
                     # Aliases
                     aliases = row.get("aliases", "").strip()
@@ -134,7 +170,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                         for alias in aliases.split(","):
                             alias = alias.strip()
                             if alias:
-                                character_tags.add(alias)
+                                booru_tags.add(alias)
 
                     # Skins
                     skins = row.get("skins", "").strip()
@@ -142,17 +178,234 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                         for skin in skins.split(","):
                             skin = skin.strip()
                             if skin:
-                                character_tags.add(skin)
+                                booru_tags.add(skin)
+            
+            character_tags.update(booru_tags)
+            source_counts["booru_characters.csv"] = {
+                "general": 0,
+                "series": 0,
+                "character": len(booru_tags),
+                "total": len(booru_tags),
+            }
         except Exception as e:
             log.warning(f"Failed to load booru_characters.csv: {e}")
     else:
         log.warning(f"booru_characters.csv not found at {booru_path}")
 
+    # ============================================================
+    # Source 5: tags.json (OPTIONAL)
+    # ============================================================
+    tags_path = Path("./tags.json")
+    tags_general: set[str] = set()
+    tags_character: set[str] = set()
+    tags_series: set[str] = set()
+    if tags_path.exists():
+        try:
+            with tags_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+                # Handle both array and object formats
+                if isinstance(data, list):
+                    items = data
+                elif isinstance(data, dict) and "tags" in data:
+                    items = data["tags"]
+                else:
+                    items = data.values() if isinstance(data, dict) else []
+                
+                for entry in items:
+                    if isinstance(entry, dict):
+                        name = entry.get("name", "").strip()
+                        category = entry.get("category", -1)
+                        
+                        if not name:
+                            continue
+                        
+                        # Skip deprecated tags
+                        if entry.get("is_deprecated", False):
+                            continue
+                        
+                        # Category 4 = character
+                        if category == 4:
+                            tags_character.add(name)
+                        # Category 0 (general) → general
+                        elif category == 0:
+                            tags_general.add(name)
+                        # Category 3 (copyright/series) → series
+                        elif category == 3:
+                            tags_series.add(name)
+                        # Category 1 (artist) and 5 (meta) are ignored
+            
+            general_tags.update(tags_general)
+            general_tags.update(tags_series)
+            character_tags.update(tags_character)
+            source_counts["tags.json"] = {
+                "general": len(tags_general),
+                "series": len(tags_series),
+                "character": len(tags_character),
+                "total": len(tags_general) + len(tags_series) + len(tags_character),
+            }
+        except Exception as e:
+            log.warning(f"Failed to load tags.json: {e}")
+    else:
+        log.warning(f"tags.json not found at {tags_path}")
+
+    # ============================================================
+    # Source 6: danbooru-tags.json (OPTIONAL)
+    # ============================================================
+    danbooru_path = Path("./danbooru-tags.json")
+    danbooru_general: set[str] = set()
+    danbooru_character: set[str] = set()
+    danbooru_series: set[str] = set()
+    if danbooru_path.exists():
+        try:
+            with danbooru_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                tags_list = data.get("tags", [])
+                
+                for entry in tags_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    
+                    tag_name = entry.get("n", "").strip()
+                    category = entry.get("c", -1)
+                    
+                    if not tag_name:
+                        continue
+                    
+                    # Category 4 = character
+                    if category == 4:
+                        danbooru_character.add(tag_name)
+                    # Category 0 (general) → general
+                    elif category == 0:
+                        danbooru_general.add(tag_name)
+                    # Category 3 (copyright/series) → series
+                    elif category == 3:
+                        danbooru_series.add(tag_name)
+                    # Category 1 (artist) and 5 (meta) are ignored
+            
+            general_tags.update(danbooru_general)
+            general_tags.update(danbooru_series)
+            character_tags.update(danbooru_character)
+            source_counts["danbooru-tags.json"] = {
+                "general": len(danbooru_general),
+                "series": len(danbooru_series),
+                "character": len(danbooru_character),
+                "total": len(danbooru_general) + len(danbooru_series) + len(danbooru_character),
+            }
+        except Exception as e:
+            log.warning(f"Failed to load danbooru-tags.json: {e}")
+    else:
+        log.warning(f"danbooru-tags.json not found at {danbooru_path}")
+
+    # ============================================================
+    # Source 7: gelbooru_tags_*.jsonl (OPTIONAL)
+    # ============================================================
+    import glob
+    gelbooru_files = glob.glob("./gelbooru_tags_*.jsonl")
+    gelbooru_general: set[str] = set()
+    gelbooru_character: set[str] = set()
+    gelbooru_series: set[str] = set()
+    
+    if gelbooru_files:
+        # Sort by filename to ensure consistent order
+        gelbooru_files.sort()
+        latest_file = Path(gelbooru_files[-1])
+        
+        try:
+            with latest_file.open("r", encoding="utf-8") as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        log.warning(f"Failed to parse line {line_num} in {latest_file.name}: {e}")
+                        continue
+                    
+                    tag_name = entry.get("tag_name", "").strip()
+                    category_id = entry.get("category_id", -1)
+                    is_ambiguous = entry.get("is_ambiguous", False)
+                    
+                    if not tag_name:
+                        continue
+                    
+                    # Skip ambiguous tags
+                    if is_ambiguous:
+                        continue
+                    
+                    # Category 4 = character
+                    if category_id == 4:
+                        gelbooru_character.add(tag_name)
+                    # Category 0 (general) → general
+                    elif category_id == 0:
+                        gelbooru_general.add(tag_name)
+                    # Category 3 (copyright/series) → series
+                    elif category_id == 3:
+                        gelbooru_series.add(tag_name)
+                    # Category 1 (artist) is ignored
+            
+            general_tags.update(gelbooru_general)
+            general_tags.update(gelbooru_series)
+            character_tags.update(gelbooru_character)
+            source_counts[latest_file.name] = {
+                "general": len(gelbooru_general),
+                "series": len(gelbooru_series),
+                "character": len(gelbooru_character),
+                "total": len(gelbooru_general) + len(gelbooru_series) + len(gelbooru_character),
+            }
+        except Exception as e:
+            log.warning(f"Failed to load {latest_file.name}: {e}")
+    else:
+        log.warning("No gelbooru_tags_*.jsonl files found")
+
     # Convert to lists and normalize (lowercase with underscores)
     general_list = sorted([tag.lower().replace(" ", "_") for tag in general_tags if tag])
     character_list = sorted([tag.lower().replace(" ", "_") for tag in character_tags if tag])
 
-    log.info(f"Loaded {len(general_list)} general tags and {len(character_list)} character tags")
+    # Calculate totals for logging
+    total_general = len(general_list)
+    total_character = len(character_list)
+    total_combined = total_general + total_character
+
+    # Log detailed source breakdown
+    log.info(f"Loaded tag databases:")
+    log.info(f"  Source breakdown:")
+    
+    # Find max source name length for alignment
+    max_name_len = max(len(name) for name in source_counts.keys()) if source_counts else 0
+    max_name_len = max(max_name_len, len("TOTAL"))
+    
+    # Track total series across all sources (for display)
+    total_series = sum(counts.get("series", 0) for counts in source_counts.values())
+    
+    for source_name, counts in source_counts.items():
+        log.info(
+            f"    {source_name:<{max_name_len}} : "
+            f"{counts['general']:>6} general, "
+            f"{counts['series']:>6} series, "
+            f"{counts['character']:>6} character, "
+            f"{counts['total']:>6} total"
+        )
+    
+    # Log source totals
+    log.info(
+        f"    {'SOURCE TOTALS':-<{max_name_len}} : "
+        f"{total_general:>6} general, "
+        f"{total_series:>6} series, "
+        f"{total_character:>6} character, "
+        f"{total_general + total_series + total_character:>6} total"
+    )
+    
+    # Log combined totals (series merged into general)
+    log.info(
+        f"    {'COMBINED':-<{max_name_len}} : "
+        f"{total_general + total_series:>6} general (incl. series), "
+        f"0 series, "
+        f"{total_character:>6} character, "
+        f"{total_general + total_series + total_character:>6} total"
+    )
 
     _TAG_CACHE[cache_key] = (general_list, character_list)
     return general_list, character_list
@@ -607,11 +860,11 @@ def resolve_character_tags(
 ) -> list[str]:
     """
     Resolve character tags based on the count from count tags.
-    
+
     Priority:
     1. User-provided character tags (from hints)
     2. AI-inferenced character tags (if allow_ai is True and more characters are needed)
-    
+
     Args:
         user_character_tags: Character tags from user hints
         ai_character_tags: Character tags from AI inference (already filtered by threshold)
@@ -620,63 +873,70 @@ def resolve_character_tags(
         threshold: The threshold used for AI character filtering (for logging)
         context_name: Optional context name for logging
         all_tags: Optional list of all tags to check for special tags
-    
+
     Returns:
         List of resolved character tags (limited to 'count' items)
     """
     SPECIAL_TAGS = {"original", "borrowed_character"}
-    
+
     if count < 0:
         raise ValueError(f"Character count cannot be negative: {count}")
-    
+
     if count == 0:
         return []
-    
+
     resolved = []
-    
+
     # User characters first
     for tag in user_character_tags:
         if tag not in resolved:
             resolved.append(tag)
             if len(resolved) >= count:
                 return resolved
-    
+
     # AI characters if needed
     if allow_ai and len(resolved) < count:
         needed = count - len(resolved)
         if len(ai_character_tags) < needed:
             name_str = f" for {context_name}" if context_name else ""
             threshold_str = f" (threshold: {threshold})" if threshold is not None else ""
-            
+
             # Check if special tags are present
             has_special_tag = any(tag in SPECIAL_TAGS for tag in (all_tags or []))
-            note_str = " (note: 'original' or 'borrowed_character' present - may be an unnamed/original character)" if has_special_tag else ""
-            
+            note_str = (
+                " (note: 'original' or 'borrowed_character' present - may be an unnamed/original character)"
+                if has_special_tag
+                else ""
+            )
+
             log.warning(
                 f"Insufficient AI character tags{name_str}: "
                 f"need {needed} more characters, "
                 f"but only {len(ai_character_tags)} AI tags available{threshold_str}{note_str}"
             )
-        
+
         for tag in ai_character_tags:
             if tag not in resolved:
                 resolved.append(tag)
                 if len(resolved) >= count:
                     return resolved
-    
+
     # Mismatch warning
     if len(resolved) < count:
         name_str = f" for {context_name}" if context_name else ""
-        
+
         # Check if special tags are present
         has_special_tag = any(tag in SPECIAL_TAGS for tag in (all_tags or []))
-        note_str = " (note: 'original' or 'borrowed_character' present - this may be an unnamed/original character)" if has_special_tag else ""
-        
+        note_str = (
+            " (note: 'original' or 'borrowed_character' present - this may be an unnamed/original character)"
+            if has_special_tag
+            else ""
+        )
+
         log.warning(
             f"Character count mismatch{name_str}: {count} characters expected from count tags, "
             f"but only {len(resolved)} character tags available "
             f"(user: {len(user_character_tags)}, AI: {len(ai_character_tags)}){note_str}"
         )
-    
-    return resolved
 
+    return resolved

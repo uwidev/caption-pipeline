@@ -14,6 +14,8 @@ from caption_pipeline.core import PipelineStep, format_step_help, get_step_help
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.pipeline import Pipeline
 from caption_pipeline.steps.debug import DebugStep
+from caption_pipeline.steps.filter_danbooru import FilterDanbooruStep
+from caption_pipeline.steps.filter_overlap import FilterOverlapStep
 from caption_pipeline.steps.format_join import FormatJoinStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
@@ -101,7 +103,9 @@ def setup_logging(debug: bool = False) -> None:
         format_str = f"<green>{{time:YYYY-MM-DD HH:mm:ss.SSS}}</green> | <level>{{level: <8}}</level> | <cyan>{{module: <{max_module_len}}}</cyan> - <level>{{message}}</level>"
     else:
         level = "INFO"
-        format_str = "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> - <level>{message}</level>"
+        format_str = (
+            "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> - <level>{message}</level>"
+        )
 
     # Add stdout sink with colors
     logger.add(
@@ -262,27 +266,27 @@ def load_existing_caption(image_path: Path) -> list[list[str]]:
     # Check if we have sections separated by " ||| "
     # Handle case where content might start with "|||" or " |||"
     normalized_content = content
-    
+
     # If the content starts with "|||" (with or without space), treat first section as empty
     if normalized_content.startswith("|||"):
         normalized_content = " " + normalized_content  # Add space to make parsing consistent
     elif normalized_content.startswith(" |||"):
         # Already has leading space, keep as is
         pass
-    
+
     if " ||| " in normalized_content:
         sections = normalized_content.split(" ||| ")
-        
+
         # Strip whitespace from each section
         sections = [s.strip() for s in sections]
-        
+
         # Handle the case where the first section is empty (content starts with "|||")
         if sections and sections[0] == "":
             sections = sections[1:]  # Remove the empty first section
             # Now we have [section0, section1, section2] but section0 was empty
             # So we need to add an empty section0 back
             sections = [""] + sections
-        
+
         parsed_sections = []
 
         for idx, section in enumerate(sections):
@@ -407,6 +411,8 @@ def get_all_step_classes() -> list[type]:
         TagNaturalLanguageStep,
         TagNaturalLanguageFilterStep,
         FormatJoinStep,
+        FilterDanbooruStep,
+        FilterOverlapStep,
         DebugStep,
     ]
 
@@ -438,6 +444,58 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 steps.append(
                     CharacterValidationStep(
                         output_file=output_file,
+                    )
+                )
+
+            case "filter:danbooru_only" | "filter:danbooru" | "filter:db":
+                whitelist = []
+                section = 1
+
+                i = 1
+                while i < len(parts):
+                    match parts[i]:
+                        case "--whitelist":
+                            whitelist = parts[i + 1].split(",")
+                            i += 2
+                        case "--section":
+                            section = int(parts[i + 1])
+                            i += 2
+                        case _:
+                            raise ValueError(
+                                f"Unknown flag '{parts[i]}' for step '{step_name}'. "
+                                f"Available flags: --whitelist, --section"
+                            )
+
+                steps.append(
+                    FilterDanbooruStep(
+                        whitelist=whitelist,
+                        section=section,
+                    )
+                )
+
+            case "filter:drop_overlap" | "filter:overlap" | "filter:drop":
+                section = -1
+                keep_scored = False
+
+                i = 1
+                while i < len(parts):
+                    match parts[i]:
+                        case "--section":
+                            section = int(parts[i + 1])
+                            i += 2
+                        case "--keep-scored":
+                            keep_scored = True
+                            i += 1
+                        case _:
+                            raise ValueError(
+                                f"Unknown flag '{parts[i]}' for step '{step_name}'. "
+                                f"Available flags: --section, --keep-scored"
+                            )
+
+                steps.append(
+                    FilterOverlapStep(
+                        section=section,
+                        keep_scored=keep_scored,
                     )
                 )
 
@@ -1052,49 +1110,54 @@ Use --help-steps to see detailed step reference.
 
         for file_path in input_files:
             with log.section(f"Processing: {file_path.name}"):
-
                 # Load the caption tags from existing .txt file
                 tags = load_existing_caption(file_path)
 
                 # Section 0: Prepended tags
                 if tags[0]:
-                    log.info(f"Prepended ({len(tags[0])}): {', '.join(tags[0][:10])}{'...' if len(tags[0]) > 10 else ''}")
+                    log.info(
+                        f"Prepended ({len(tags[0])}): {', '.join(tags[0][:10])}{'...' if len(tags[0]) > 10 else ''}"
+                    )
                 else:
-                    log.info(f"Prepended: (none)")
-                
+                    log.info("Prepended: (none)")
+
                 # Section 1: Main tags
                 if tags[1]:
-                    log.info(f"Main ({len(tags[1])}): {', '.join(tags[1][:10])}{'...' if len(tags[1]) > 10 else ''}")
+                    log.info(
+                        f"Main ({len(tags[1])}): {', '.join(tags[1][:10])}{'...' if len(tags[1]) > 10 else ''}"
+                    )
                 else:
-                    log.info(f"Main: (none)")
-                
+                    log.info("Main: (none)")
+
                 # Section 2: NL caption
                 if tags[2] and tags[2][0]:
-                    caption_preview = tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
+                    caption_preview = (
+                        tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
+                    )
                     log.info(f"NL: {caption_preview}")
                 else:
-                    log.info(f"NL: (none)")
+                    log.info("NL: (none)")
 
                 # Combine sections 0 and 1 for processing
                 all_tags = tags[0] + tags[1]
 
                 # Extract rating FIRST (removes rating tags from all_tags)
                 tags_without_ratings, rating = extract_rating(all_tags)
-                
+
                 # Log extracted rating at INFO level
                 if rating:
                     log.info(f"Extracted rating: {rating}")
                 else:
-                    log.info(f"Extracted rating: (none)")
+                    log.info("Extracted rating: (none)")
 
                 # Extract character hints from tags without ratings
-                remaining_tags, character_tags  = extract_character_hints(tags_without_ratings)
+                remaining_tags, character_tags = extract_character_hints(tags_without_ratings)
 
                 # Log extracted characters at INFO level
                 if character_tags:
                     log.info(f"Characters ({len(character_tags)}): {', '.join(character_tags)}")
                 else:
-                    log.info(f"Characters: (none)")
+                    log.info("Characters: (none)")
 
                 # Reconstruct the tag sections
                 modified_tags = [

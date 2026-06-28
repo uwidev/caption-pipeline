@@ -9,6 +9,8 @@ This module provides ready-to-use steps for common captioning operations:
 - TagNaturalLanguageFilterStep: Filter NL captions through Ollama
 - FormatJoinStep: Format and save final captions
 - CharacterValidationStep: Validate character tags in grounding hints
+- FilterDanbooruStep: Filter tags to only keep danbooru tags
+- FilterOverlapStep: Drop overlapping tags
 - DebugStep: Debug system state
 
 Each step is a self-contained operation that can be composed into a pipeline.
@@ -22,6 +24,8 @@ from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
 from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguageFilterStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
+from caption_pipeline.steps.filter_danbooru import FilterDanbooruStep
+from caption_pipeline.steps.filter_overlap import FilterOverlapStep
 from caption_pipeline.steps.debug import DebugStep
 
 __all__ = [
@@ -32,5 +36,7 @@ __all__ = [
     "TagNaturalLanguageFilterStep",
     "FormatJoinStep",
     "CharacterValidationStep",
+    "FilterDanbooruStep",
+    "FilterOverlapStep",
     "DebugStep",
 ]
