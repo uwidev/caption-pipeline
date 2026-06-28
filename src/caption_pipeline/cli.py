@@ -17,6 +17,7 @@ from caption_pipeline.steps.debug import DebugStep
 from caption_pipeline.steps.filter_danbooru import FilterDanbooruStep
 from caption_pipeline.steps.filter_overlap import FilterOverlapStep
 from caption_pipeline.steps.format_join import FormatJoinStep
+from caption_pipeline.steps.format_section import FormatSectionStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
 from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
@@ -411,6 +412,7 @@ def get_all_step_classes() -> list[type]:
         TagNaturalLanguageStep,
         TagNaturalLanguageFilterStep,
         FormatJoinStep,
+        FormatSectionStep,
         FilterDanbooruStep,
         FilterOverlapStep,
         DebugStep,
@@ -974,6 +976,47 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         save_empty=save_empty,
                         resolve_counts=resolve_counts,
                         include_character_tags=include_character_tags,
+                        use_spaces=use_spaces,
+                    )
+                )
+
+            case "format:section" | "format:s":
+                section = 1
+                output_dir = Path("./done/")
+                suffix = ""
+                delimiter = ", "
+                use_spaces = True
+
+                i = 1
+                while i < len(parts):
+                    match parts[i]:
+                        case "--section":
+                            section = int(parts[i + 1])
+                            i += 2
+                        case "--output-dir":
+                            output_dir = Path(parts[i + 1])
+                            i += 2
+                        case "--suffix":
+                            suffix = parts[i + 1]
+                            i += 2
+                        case "--delimiter":
+                            delimiter = parts[i+1]
+                            i += 2
+                        case "--no-spaces":
+                            use_spaces = False
+                            i += 1
+                        case _:
+                            raise ValueError(
+                                f"Unknown flag '{parts[i]}' for step '{step_name}'. "
+                                f"Available flags: --section, --output-dir, --suffix, --delimiter, --no-spaces"
+                            )
+
+                steps.append(
+                    FormatSectionStep(
+                        section=section,
+                        output_dir=output_dir,
+                        suffix=suffix,
+                        delimiter=delimiter,
                         use_spaces=use_spaces,
                     )
                 )

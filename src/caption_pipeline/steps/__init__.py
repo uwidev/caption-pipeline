@@ -8,6 +8,7 @@ This module provides ready-to-use steps for common captioning operations:
 - TagNaturalLanguageStep: Generate NL captions using ToriiGate
 - TagNaturalLanguageFilterStep: Filter NL captions through Ollama
 - FormatJoinStep: Format and save final captions
+- FormatSectionStep: Output only a specific section
 - CharacterValidationStep: Validate character tags in grounding hints
 - FilterDanbooruStep: Filter tags to only keep danbooru tags
 - FilterOverlapStep: Drop overlapping tags
@@ -18,6 +19,7 @@ Steps are designed to be stateless and idempotent when possible.
 """
 
 from caption_pipeline.steps.format_join import FormatJoinStep
+from caption_pipeline.steps.format_section import FormatSectionStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
 from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
@@ -35,6 +37,7 @@ __all__ = [
     "TagNaturalLanguageStep",
     "TagNaturalLanguageFilterStep",
     "FormatJoinStep",
+    "FormatSectionStep",
     "CharacterValidationStep",
     "FilterDanbooruStep",
     "FilterOverlapStep",
