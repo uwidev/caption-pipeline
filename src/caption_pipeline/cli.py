@@ -476,7 +476,8 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
             case "filter:drop_overlap" | "filter:overlap" | "filter:drop":
                 section = -1
                 keep_scored = False
-
+                keep_hints = False
+                
                 i = 1
                 while i < len(parts):
                     match parts[i]:
@@ -486,16 +487,20 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--keep-scored":
                             keep_scored = True
                             i += 1
+                        case "--keep-hints":
+                            keep_hints = True
+                            i += 1
                         case _:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
-                                f"Available flags: --section, --keep-scored"
+                                f"Available flags: --section, --keep-scored, --keep-hints"
                             )
-
+                
                 steps.append(
                     FilterOverlapStep(
                         section=section,
                         keep_scored=keep_scored,
+                        keep_hints=keep_hints,
                     )
                 )
 
@@ -504,7 +509,6 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 character_threshold = 0.75
                 whitelist = []
                 blacklist = []
-                drop_overlap = True
                 infer_characters = False
                 unload_models = True
                 use_hints = True
@@ -523,9 +527,6 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--blacklist":
                             blacklist = parts[i + 1].split(",")
                             i += 2
-                        case "--no-drop-overlap":
-                            drop_overlap = False
-                            i += 1
                         case "--infer-characters":
                             infer_characters = True
                             i += 1
@@ -542,8 +543,8 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
                                 f"Available flags: --threshold, --thresh, --character-threshold "
-                                f"--cthresh --whitelist, --blacklist --no-drop-overlap "
-                                f"--infer-characters --no-unload-models --use-hints, --no-use-hints"
+                                f"--cthresh --whitelist, --blacklist --infer-characters --no-unload-models "
+                                f"--use-hints, --no-use-hints"
                             )
 
                 steps.append(
@@ -552,7 +553,6 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         character_threshold=character_threshold,
                         whitelist=whitelist,
                         blacklist=blacklist,
-                        drop_overlap=drop_overlap,
                         infer_characters=infer_characters,
                         unload_models_after_batch=unload_models,
                         use_user_hints=use_hints,
@@ -560,13 +560,13 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 )
 
             case "tag:resolve" | "tag:fix":
-                mode = "smart"
+                mode = "drop"
                 max_padding = 30
                 max_windows = 0
                 force_windows = 0
                 threshold = None
-                drop_overlap = True
                 max_tags = 0
+                keep_hints = True
 
                 i = 1
                 while i < len(parts):
@@ -586,17 +586,17 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--threshold":
                             threshold = float(parts[i + 1])
                             i += 2
-                        case "--no-drop-overlap":
-                            drop_overlap = False
-                            i += 1
                         case "--max-tags":
                             max_tags = int(parts[i + 1])
                             i += 2
+                        case "--no-keep-hints":
+                            keep_hints = False
+                            i += 1
                         case _:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
                                 f"Available flags: --mode, --max-padding, --max-windows, "
-                                f"--force-windows, --threshold, --no-drop-overlap, --max-tags"
+                                f"--force-windows, --threshold, --max-tags, --no-keep-hints"
                             )
 
                 steps.append(
@@ -606,8 +606,8 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         max_windows=max_windows,
                         force_windows=force_windows,
                         threshold=threshold,
-                        drop_overlap=drop_overlap,
                         max_tags=max_tags,
+                        keep_hints=keep_hints,
                     )
                 )
 
@@ -1171,6 +1171,7 @@ Use --help-steps to see detailed step reference.
                     image_path=file_path,
                     source_path=file_path,
                     tags=modified_tags,
+                    original_tags=tags,
                     character_tags=character_tags,
                     rating=rating,
                 )

@@ -46,7 +46,6 @@ AI-inferenced characters if any user-provided characters exist.""",
         {"flag": "--threshold FLOAT", "help": "Confidence threshold for tags", "default": "0.35"},
         {"flag": "--whitelist TAG,TAG,...", "help": "Tags to always keep (overrides all filters)"},
         {"flag": "--blacklist TAG,TAG,...", "help": "Tags to always remove"},
-        {"flag": "--no-drop-overlap", "help": "Don't remove overlapping tags"},
         {"flag": "--no-infer-characters", "help": "Don't infer character names from AI"},
         {
             "flag": "--no-unload-models",
@@ -77,7 +76,6 @@ class TagGenerationStep(PipelineStep):
         self,
         threshold: float = 0.35,
         character_threshold: float = 0.75,
-        drop_overlap: bool = True,
         whitelist: list[str] | None = None,
         blacklist: list[str] | None = None,
         danbooru_only: bool = False,
@@ -92,7 +90,6 @@ class TagGenerationStep(PipelineStep):
     ) -> None:
         self.threshold: float = threshold
         self.character_threshold: float = character_threshold
-        self.drop_overlap: bool = drop_overlap
         self.whitelist: set[str] = set(whitelist or [])
         self.blacklist: set[str] = set(blacklist or [])
         self.danbooru_only: bool = danbooru_only
@@ -263,15 +260,15 @@ class TagGenerationStep(PipelineStep):
 
             if kept:
                 log.info(f"Kept: {len(kept)} tags")
-                log.debug(f"{', '.join(kept[:10])}{'...' if len(kept) > 10 else ''}")
+                log.debug(f"{', '.join(kept)}")
 
             if added_by_ai:
                 log.info(f"Added by AI: {len(added_by_ai)} tags")
-                log.debug(f"{', '.join(added_by_ai[:10])}{'...' if len(added_by_ai) > 10 else ''}")
+                log.debug(f"{', '.join(added_by_ai)}")
 
             if removed:
                 log.info(f"Removed: {len(removed)} tags (below threshold or blacklisted)")
-                log.debug(f"{', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
+                log.debug(f"{', '.join(removed)}")
 
             if kept_chars:
                 log.info(f"Characters kept: {', '.join(kept_chars)}")

@@ -18,18 +18,19 @@ from caption_pipeline.utils.tokenizer import get_tokenizer
 fit within this limit by intelligently adding or dropping tags based on the
 configured strategy.
 
+The 'drop' mode will only drop tags to fit within the limit.
 The 'add' mode will add tags from the inferenced pool (tags collected during
-TagGenerationStep that were below the main threshold). If no inferenced tags
-are available, it will run inference itself to gather them.
-
-The 'smart' mode will add or drop tags based on padding. The 'drop' mode will
-only drop tags.
+TagGenerationStep that were below the main threshold).
+The 'smart' mode will add or drop tags based on padding.
 
 '--force-windows N' will force tags to fill exactly N CLIP windows by adding
 or dropping tags as needed. Tags below the threshold may be added to prevent
-excessive padding.""",
+excessive padding.
+
+--keep-hints (default: True) ensures original hinted tags are never dropped.
+Only AI-generated tags will be dropped when needed.""",
     options=[
-        {"flag": "--mode {smart,drop,add}", "help": "Resolution strategy", "default": "smart"},
+        {"flag": "--mode {smart,drop,add}", "help": "Resolution strategy", "default": "drop"},
         {"flag": "--max-padding INT", "help": "Maximum allowed padding tokens", "default": "30"},
         {
             "flag": "--max-windows INT",
@@ -50,8 +51,13 @@ excessive padding.""",
             "help": "Maximum number of tags to keep (0 = no limit)",
             "default": "0",
         },
+        {
+            "flag": "--no-keep-hints",
+            "help": "Don't preserve original hinted tags (allow them to be dropped)",
+            "default": "keep hints",
+        },
     ],
-    example="tag:resolve --mode add --max-padding 20 --force-windows 2",
+    example="tag:resolve --mode drop --max-padding 20",
 )
 class TagResolveStep(PipelineStep):
     """
@@ -60,14 +66,14 @@ class TagResolveStep(PipelineStep):
 
     def __init__(
         self,
-        mode: str = "smart",
+        mode: str = "drop",
         max_padding: int = 30,
         max_windows: int = 0,
         force_windows: int = 0,
         window_size: int = 77,
         threshold: float | None = None,
-        drop_overlap: bool = True,
         max_tags: int = 0,
+        keep_hints: bool = True,
     ):
         self.mode = mode
         self.max_padding = max_padding
@@ -75,8 +81,8 @@ class TagResolveStep(PipelineStep):
         self.force_windows = force_windows
         self.window_size = window_size
         self.threshold = threshold
-        self.drop_overlap = drop_overlap
         self.max_tags = max_tags
+        self.keep_hints = keep_hints
 
         self._tokenizer = None
         self._context: ImageContext | None = None
@@ -87,6 +93,53 @@ class TagResolveStep(PipelineStep):
     def validate(self, context: ImageContext) -> bool:
         """Run if there are tags to resolve."""
         return bool(context.get_tags(section=1))
+
+    def _get_original_tags(self, context: ImageContext) -> set[str]:
+        """Get original hinted tags as a set (sections 0 and 1 only)."""
+        original_flat = []
+        for section in [0, 1]:
+            if section < len(context.original_tags):
+                original_flat.extend(context.original_tags[section])
+        return set(original_flat)
+
+    def _drop_tags_safely(self, tags: list[str], target_tokens: int, original_set: set[str]) -> list[str]:
+        """
+        Drop tags until token count is <= target_tokens.
+        If keep_hints is True, skip dropping tags that are in original_set.
+        """
+        if not tags:
+            return tags
+        
+        result = tags.copy()
+        current_tokens = self._count_tokens(result)
+        
+        # Track which tags we've considered dropping
+        # We'll iterate from the end (lowest confidence) and skip originals
+        while current_tokens > target_tokens and len(result) > 1:
+            # Find the last tag that is NOT in original_set (if keep_hints is True)
+            dropped = False
+            for i in range(len(result) - 1, -1, -1):
+                tag = result[i]
+                if self.keep_hints and tag in original_set:
+                    # Skip original hint tags
+                    continue
+                # Drop this tag
+                result.pop(i)
+                dropped = True
+                break
+            
+            if not dropped:
+                # All remaining tags are original hints - can't drop any more
+                log.debug(f"Cannot drop more tags: all remaining {len(result)} tags are original hints")
+                break
+            
+            current_tokens = self._count_tokens(result)
+        
+        if self.keep_hints and len(result) < len(tags):
+            dropped_count = len(tags) - len(result)
+            log.debug(f"Dropped {dropped_count} AI-generated tags (kept original hints)")
+        
+        return result
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Resolve tags to fit within CLIP limits."""
@@ -101,6 +154,12 @@ class TagResolveStep(PipelineStep):
             # Lazy load tokenizer
             if self._tokenizer is None:
                 self._tokenizer = get_tokenizer()
+
+            # Get original tags for preservation
+            original_set = self._get_original_tags(context) if self.keep_hints else set()
+            
+            if self.keep_hints and original_set:
+                log.debug(f"Preserving {len(original_set)} original hinted tags")
 
             # Calculate current token usage
             current_tokens = self._count_tokens(tags)
@@ -117,12 +176,13 @@ class TagResolveStep(PipelineStep):
 
             # If force_windows is set, we need to add or drop to hit exactly that many windows
             if self.force_windows > 0:
-                log.info(f"Forcing exactly {self.force_windows} CLIP windows")
-                resolved = self._resolve_force_windows(tags)
+                log.debug(f"Forcing exactly {self.force_windows} CLIP windows")
+                resolved = self._resolve_force_windows(tags, original_set)
             else:
                 # Normal resolution logic
-                need_resolve = (self.max_windows and current_windows > self.max_windows) or (
-                    current_padding > self.max_padding and current_tokens > self.window_size
+                need_resolve = (
+                    (self.max_windows and current_windows > self.max_windows)
+                    or (current_padding > self.max_padding and current_tokens > self.window_size)
                 )
 
                 # For add mode, always try to add if we can
@@ -137,11 +197,11 @@ class TagResolveStep(PipelineStep):
 
                 # Resolve based on mode
                 if self.mode == "drop":
-                    resolved = self._resolve_drop(tags)
+                    resolved = self._resolve_drop(tags, original_set)
                 elif self.mode == "add":
                     resolved = self._resolve_add(tags)
                 else:  # smart
-                    resolved = self._resolve_smart(tags)
+                    resolved = self._resolve_smart(tags, original_set)
 
             # Store resolved tags
             result = context.copy()
@@ -155,30 +215,39 @@ class TagResolveStep(PipelineStep):
             # === Show deltas ===
             added = [t for t in resolved if t not in tags]
             removed = [t for t in tags if t not in resolved]
-
+            
             log.info(
-                f"Tag resolution for {context.image_path.name}: "
                 f"{original_count} tags ({original_tokens} tokens) → {final_count} tags ({final_tokens} tokens)"
             )
-
+            
+            if self.keep_hints and removed:
+                # Check if any removed tags were original hints
+                removed_set = set(removed)
+                original_removed = removed_set & original_set
+                if original_removed:
+                    log.warning(
+                        f"Original hinted tags were dropped: {', '.join(sorted(original_removed))}"
+                    )
+            
             if removed:
-                log.info(f"Removed: {len(removed)} tags")
-                log.debug(f"  {', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
-
+                log.info(f"  Removed: {len(removed)} tags")
+                log.debug(f"    {', '.join(removed[:10])}{'...' if len(removed) > 10 else ''}")
+            
             if added:
-                log.info(f"Added: {len(added)} tags")
-                log.debug(f"  {', '.join(added[:10])}{'...' if len(added) > 10 else ''}")
-
+                log.info(f"  Added: {len(added)} tags")
+                log.debug(f"    {', '.join(added[:10])}{'...' if len(added) > 10 else ''}")
+            
             if not removed and not added:
-                log.info("No changes needed")
-
+                log.debug("  No changes needed")
+            
             log.debug(
-                f"Resolved to {final_tokens} tokens, {final_windows} windows, padding: {final_padding}"
+                f"Resolved to {final_tokens} tokens, {final_windows} windows, "
+                f"padding: {final_padding}"
             )
-
+            
             return result
 
-    def _resolve_force_windows(self, tags: list[str]) -> list[str]:
+    def _resolve_force_windows(self, tags: list[str], original_set: set[str]) -> list[str]:
         """
         Force tags to fill exactly N CLIP windows.
 
@@ -200,7 +269,7 @@ class TagResolveStep(PipelineStep):
         # If we need to drop (too many tokens)
         if current_tokens > target_tokens_max:
             log.debug(f"Dropping tags from {current_tokens} to <= {target_tokens_max} tokens")
-            return self._resolve_drop_to_target(tags, target_tokens_max)
+            return self._drop_tags_safely(tags, target_tokens_max, original_set)
 
         # If we need to add (too few tokens)
         if current_tokens < target_tokens_min:
@@ -211,12 +280,9 @@ class TagResolveStep(PipelineStep):
         log.debug("Already within target range")
         return tags
 
-    def _resolve_drop_to_target(self, tags: list[str], target_tokens: int) -> list[str]:
+    def _resolve_drop_to_target(self, tags: list[str], target_tokens: int, original_set: set[str]) -> list[str]:
         """Drop tags until token count is <= target_tokens."""
-        result = tags[:]
-        while self._count_tokens(result) > target_tokens and len(result) > 1:
-            result = result[:-1]
-        return result
+        return self._drop_tags_safely(tags, target_tokens, original_set)
 
     def _resolve_add_to_target(self, tags: list[str], target_tokens: int) -> list[str]:
         """
@@ -233,11 +299,11 @@ class TagResolveStep(PipelineStep):
 
         # Sort ALL tags by confidence descending (no threshold filter!)
         sorted_tags = sorted(inferenced_tags.items(), key=lambda x: -x[1])
-
+        
         # Filter out tags already in the main list
         tags_set = set(tags)
         available = [(tag, conf) for tag, conf in sorted_tags if tag not in tags_set]
-
+        
         if not available:
             log.debug("All inferenced tags already in main list")
             return tags
@@ -250,12 +316,12 @@ class TagResolveStep(PipelineStep):
         result = tags.copy()
         added = 0
         current_tokens = self._count_tokens(result)
-
+        
         for tag, conf in available:
             result.append(tag)
             added += 1
             current_tokens = self._count_tokens(result)
-
+            
             # Check if we've reached the target after each addition
             if current_tokens >= target_tokens:
                 log.debug(
@@ -292,14 +358,28 @@ class TagResolveStep(PipelineStep):
             return self.window_size
         return self.window_size - (self._count_tokens(tags) % self.window_size)
 
-    def _resolve_drop(self, tags: list[str]) -> list[str]:
+    def _resolve_drop(self, tags: list[str], original_set: set[str]) -> list[str]:
         """Drop tags until within limits."""
         if not self._needs_drop(tags):
             return tags
 
         result = tags[:]
         while self._needs_drop(result) and len(result) > 1:
-            result = result[:-1]
+            # Find the last tag that is NOT in original_set (if keep_hints is True)
+            dropped = False
+            for i in range(len(result) - 1, -1, -1):
+                tag = result[i]
+                if self.keep_hints and tag in original_set:
+                    # Skip original hint tags
+                    continue
+                # Drop this tag
+                result.pop(i)
+                dropped = True
+                break
+            
+            if not dropped:
+                # All remaining tags are original hints - can't drop any more
+                break
 
         return result
 
@@ -329,7 +409,7 @@ class TagResolveStep(PipelineStep):
             return {}
 
         try:
-            from imgutils.tagging import overlap, pixai, wd14
+            from imgutils.tagging import wd14, pixai
 
             image = self._context.load_image()
 
@@ -365,51 +445,16 @@ class TagResolveStep(PipelineStep):
             for tag, conf in pixai_general.items():
                 combined[tag] = max(combined.get(tag, 0), conf)
 
-            # Drop overlap if requested
-            if self.drop_overlap:
-                combined = overlap.drop_overlap_tags(combined)
-
             # Store in context for future use
             self._context.inferenced_tags = combined
 
-            log.debug(
-                f"Gathered {len(combined)} tags from inference (threshold: {low_threshold:.2f})"
-            )
+            log.debug(f"Gathered {len(combined)} tags from inference (threshold: {low_threshold:.2f})")
 
             return combined
 
         except Exception as e:
             log.error(f"Failed to run inference for tags: {e}")
             return {}
-
-    def _get_tags_above_threshold(
-        self,
-        inferenced_tags: dict[str, float],
-        threshold: float,
-        max_tags: int = 0,
-    ) -> list[str]:
-        """
-        Get tags from inferenced tags that are above the threshold.
-
-        Args:
-            inferenced_tags: Dict of tag -> confidence
-            threshold: Minimum confidence threshold
-            max_tags: Maximum number of tags to return (0 = no limit)
-
-        Returns:
-            List of tags sorted by confidence descending
-        """
-        # Filter by threshold
-        filtered = [(tag, conf) for tag, conf in inferenced_tags.items() if conf >= threshold]
-
-        # Sort by confidence descending
-        filtered.sort(key=lambda x: -x[1])
-
-        # Limit by max_tags if set
-        if max_tags > 0 and len(filtered) > max_tags:
-            filtered = filtered[:max_tags]
-
-        return [tag for tag, _ in filtered]
 
     def _resolve_add(self, tags: list[str]) -> list[str]:
         """
@@ -428,7 +473,7 @@ class TagResolveStep(PipelineStep):
 
         # Sort ALL tags by confidence descending (no threshold filter!)
         sorted_tags = sorted(inferenced_tags.items(), key=lambda x: -x[1])
-
+        
         # Filter out tags already in the main list
         tags_set = set(tags)
         available = [(tag, conf) for tag, conf in sorted_tags if tag not in tags_set]
@@ -448,11 +493,14 @@ class TagResolveStep(PipelineStep):
                 break
 
         if added > 0:
-            log.debug(f"Added {added} tags from inferenced pool ({len(available)} available)")
+            log.debug(
+                f"Added {added} tags from inferenced pool "
+                f"({len(available)} available)"
+            )
 
         return result
 
-    def _resolve_smart(self, tags: list[str]) -> list[str]:
+    def _resolve_smart(self, tags: list[str], original_set: set[str]) -> list[str]:
         """Intelligently add or drop tags."""
         current_tokens = self._count_tokens(tags)
 
@@ -464,7 +512,7 @@ class TagResolveStep(PipelineStep):
 
         # If we need to drop, drop
         if self._needs_drop(tags):
-            return self._resolve_drop(tags)
+            return self._resolve_drop(tags, original_set)
 
         return tags
 

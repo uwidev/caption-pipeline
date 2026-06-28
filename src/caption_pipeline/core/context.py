@@ -27,9 +27,9 @@ class ImageContext:
         source_path: Original source path (for tracking)
         image_data: Loaded PIL Image (lazy-loaded)
         tags: Three sections of tags: [prepended, main, nl]
+        original_tags: Complete original tags from all sections (preserved for reference)
         rating: Optional content rating (safe, questionable, explicit)
         character_tags: List of character tag names (normalized, lowercase with underscores)
-        character_source: Where the character tags came from (HINT, AI, or NONE)
         metadata: Additional metadata storage
         history: Processing history
         inferenced_tags: All tags from AI inference (tag -> confidence)
@@ -39,6 +39,7 @@ class ImageContext:
     source_path: Path
     image_data: Image.Image | None = None
     tags: list[list[str]] = field(default_factory=lambda: [[], [], []])
+    original_tags: list[list[str]] = field(default_factory=lambda: [[], [], []])  # Preserved originals
     rating: str | None = None
     character_tags: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -119,6 +120,7 @@ class ImageContext:
             source_path=self.source_path,
             image_data=self.image_data,
             tags=[section.copy() for section in self.tags],
+            original_tags=[section.copy() for section in self.original_tags],
             rating=self.rating,
             character_tags=self.character_tags.copy(),
             metadata=self.metadata.copy(),
@@ -158,5 +160,35 @@ class ImageContext:
         self.character_tags = tags.copy()
 
     def clear_characters(self) -> None:
-        """Clear all character tags and set source to NONE."""
+        """Clear all character tags."""
         self.character_tags = []
+
+    # ===== Original Tags Helpers =====
+
+    def get_original_tags(self, section: int = -1) -> list[str] | list[list[str]]:
+        """
+        Get the original tags.
+
+        Args:
+            section: Section to get (-1 = all sections, 0-2 = specific section)
+
+        Returns:
+            List of tags for a specific section, or list of all sections
+        """
+        if section == -1:
+            return [section.copy() for section in self.original_tags]
+        if section < 0 or section >= len(self.original_tags):
+            return []
+        return self.original_tags[section].copy()
+
+    def set_original_tags(self, tags: list[list[str]]) -> None:
+        """Set the original tags."""
+        self.original_tags = [section.copy() for section in tags]
+
+    def get_original_flat(self) -> list[str]:
+        """Get all original tags flattened (sections 0 and 1 only)."""
+        result = []
+        for section in [0, 1]:
+            if section < len(self.original_tags):
+                result.extend(self.original_tags[section])
+        return result

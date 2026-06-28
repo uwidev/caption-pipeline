@@ -73,35 +73,40 @@ class Pipeline:
             List of processed contexts (filtered if steps returned None)
         """
         current_contexts = contexts.copy()
-
+        
         for step_idx, step in enumerate(self.steps):
             if not current_contexts:
                 log.warning(f"No contexts remaining before step {step.name()}")
                 break
-
-            with log.section(
-                f"Running step {step_idx + 1}/{len(self.steps)}: {step.name()} "
+            
+            log.info(
+                f"Running step {step_idx+1}/{len(self.steps)}: {step.name()} "
                 f"on {len(current_contexts)} images"
-            ):
-                self._notify_step_start(step.name(), len(current_contexts))
-
-                try:
-                    # Process in batch (step handles batching internally)
-                    current_contexts = step.process_batch(current_contexts)
-
-                    self._notify_step_complete(step.name(), len(current_contexts))
-
-                except Exception as e:
-                    tb = traceback.format_exc()
-                    log.error(f"Step {step.name()} failed:\n{tb}")
-
-                    ctx = current_contexts[0] if current_contexts else None
-                    self._notify_error(step.name(), ctx, e)
-
-                    if self.error_handling == "stop":
-                        raise
-                    # On 'skip', continue to next step with current contexts
-
+            )
+            
+            self._notify_step_start(step.name(), len(current_contexts))
+            
+            try:
+                # Process in batch (step handles batching internally)
+                current_contexts = step.process_batch(current_contexts)
+                
+                # Add step to history for each context
+                for context in current_contexts:
+                    context.add_history(step.name())
+                
+                self._notify_step_complete(step.name(), len(current_contexts))
+                
+            except Exception as e:
+                tb = traceback.format_exc()
+                log.error(f"Step {step.name()} failed:\n{tb}")
+                
+                ctx = current_contexts[0] if current_contexts else None
+                self._notify_error(step.name(), ctx, e)
+                
+                if self.error_handling == "stop":
+                    raise
+                # On 'skip', continue to next step with current contexts
+        
         return current_contexts
 
     def _notify_step_start(self, step_name: str, count: int) -> None:

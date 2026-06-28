@@ -23,7 +23,7 @@ The step can operate on either:
 - A list of tags (removes overlapping tags)
 - A dict of tag->confidence (removes overlapping tags and returns dict)
 
-This is useful for cleaning up tag lists by removing redundant tags.""",
+Use --keep-hints to preserve original hinted tags even if they would be dropped.""",
     options=[
         {
             "flag": "--section INT",
@@ -35,8 +35,13 @@ This is useful for cleaning up tag lists by removing redundant tags.""",
             "help": "When true, keep tag scores and return a dict. Otherwise return list.",
             "default": "False",
         },
+        {
+            "flag": "--keep-hints",
+            "help": "Preserve original hinted tags even if they would be dropped",
+            "default": "False",
+        },
     ],
-    example="filter:drop_overlap --section 1",
+    example="filter:drop_overlap --section 1 --keep-hints",
 )
 class FilterOverlapStep(PipelineStep):
     """
@@ -47,6 +52,7 @@ class FilterOverlapStep(PipelineStep):
         self,
         section: int = -1,  # -1 means all sections
         keep_scored: bool = False,
+        keep_hints: bool = False,
     ) -> None:
         """
         Initialize the drop overlap filter step.
@@ -54,9 +60,11 @@ class FilterOverlapStep(PipelineStep):
         Args:
             section: Section to filter (-1 = all, 0 = prepended, 1 = main, 2 = NL)
             keep_scored: Whether to keep tag scores (requires inferenced_tags)
+            keep_hints: Whether to preserve original hinted tags
         """
         self.section: int = section
         self.keep_scored: bool = keep_scored
+        self.keep_hints: bool = keep_hints
 
     def name(self) -> str:
         return "filter:drop_overlap"
@@ -96,6 +104,12 @@ class FilterOverlapStep(PipelineStep):
         with log.section(f"Processing: {context.image_path.name}"):
             result = context.copy()
             
+            # Get original tags for preservation if keep_hints is enabled
+            original_set = set(context.get_original_flat()) if self.keep_hints else set()
+            
+            if self.keep_hints:
+                log.debug(f"Preserving original hinted tags ({len(original_set)} total)")
+            
             # Determine which sections to filter
             sections_to_filter = []
             if self.section == -1:
@@ -105,6 +119,8 @@ class FilterOverlapStep(PipelineStep):
             
             original_counts = {}
             filtered_counts = {}
+            all_removed_tags = set()
+            all_preserved_tags = set()
             
             for section in sections_to_filter:
                 # Skip NL section (section 2) as it's not tag-based
@@ -126,7 +142,23 @@ class FilterOverlapStep(PipelineStep):
                 else:
                     filtered = self._filter_tags(tags)
                 
+                # Preserve original hinted tags if enabled
+                if self.keep_hints and original_set:
+                    removed = set(tags) - set(filtered)
+                    original_removed = removed & original_set
+                    
+                    if original_removed:
+                        # Add back original tags that were dropped
+                        filtered = list(set(filtered) | original_removed)
+                        all_preserved_tags.update(original_removed)
+                
                 filtered_counts[section] = len(filtered)
+                
+                # Track all removed tags (for logging)
+                if original_counts[section] > filtered_counts[section]:
+                    removed = set(tags) - set(filtered)
+                    all_removed_tags.update(removed)
+                
                 result.set_tags(filtered, section)
             
             # Log results
@@ -135,25 +167,18 @@ class FilterOverlapStep(PipelineStep):
                 total_filtered = sum(filtered_counts.values())
                 removed = total_original - total_filtered
                 
-                log.info(
-                    f"Drop overlap: {total_original} tags → {total_filtered} tags "
-                    f"({removed} removed)"
-                )
+                # Build the log message with keep-hints info
+                log_msg = f"Drop overlap: {total_original} tags → {total_filtered} tags ({removed} removed)"
+                if self.keep_hints and all_preserved_tags:
+                    log_msg += f" ({len(all_preserved_tags)} original hints preserved)"
+                log.info(log_msg)
                 
-                if removed > 0 and total_original > 0:
-                    # Show which tags were kept/removed at DEBUG level
-                    if total_original <= 50:  # Only show details for reasonable sizes
-                        original_set = set()
-                        for section in sections_to_filter:
-                            original_set.update(context.get_tags(section))
-                        filtered_set = set()
-                        for section in sections_to_filter:
-                            filtered_set.update(result.get_tags(section))
-                        removed_tags = original_set - filtered_set
-                        
-                        if removed_tags:
-                            log.debug(f"Removed tags: {', '.join(sorted(removed_tags)[:10])}")
-                            if len(removed_tags) > 10:
-                                log.debug(f"... and {len(removed_tags) - 10} more")
+                # DEBUG: Show all preserved tags
+                if self.keep_hints and all_preserved_tags:
+                    log.debug(f"Preserved original tags ({len(all_preserved_tags)}): {', '.join(sorted(all_preserved_tags))}")
+                
+                # DEBUG: Show all removed tags
+                if all_removed_tags and removed > 0:
+                    log.debug(f"Removed tags ({len(all_removed_tags)}): {', '.join(sorted(all_removed_tags))}")
             
             return result
