@@ -20,6 +20,9 @@ Sections:
 - Section 1: Main tags (delimited by delimiter)
 - Section 2: Natural language caption (raw text, delimiter ignored)
 
+For section 1 (main tags), the order follows the original script:
+Rating → Character tags → General tags
+
 This is useful for extracting just the NL caption or just the tags for
 further processing or validation.""",
     options=[
@@ -93,6 +96,40 @@ class FormatSectionStep(PipelineStep):
         tags = context.get_tags(self.section)
         return bool(tags)
 
+    def _order_tags(self, tags: list[str], context: ImageContext) -> list[str]:
+        """
+        Order tags following the original script order:
+        Rating → Character tags → General tags (everything else)
+        
+        Only applies to section 1 (main tags).
+        """
+        if self.section != 1:
+            return tags
+        
+        # Get rating from context
+        rating = context.rating
+        
+        # Get character tags
+        character_tags = set(context.get_character_tags())
+        
+        # Separate tags into categories
+        rating_tags = []
+        char_tags = []
+        general_tags = []
+        
+        for tag in tags:
+            if rating and tag == rating:
+                rating_tags.append(tag)
+            elif tag in character_tags:
+                char_tags.append(tag)
+            else:
+                general_tags.append(tag)
+        
+        # Order: Rating → Character → General
+        ordered = rating_tags + char_tags + general_tags
+        
+        return ordered
+
     def process(self, context: ImageContext) -> ImageContext | None:
         """Output the specified section."""
         with log.section(f"Processing: {context.image_path.name}"):
@@ -101,6 +138,10 @@ class FormatSectionStep(PipelineStep):
             if not tags:
                 log.debug(f"Section {self.section} is empty - skipping")
                 return context
+
+            # Apply ordering for section 1 (main tags)
+            if self.section == 1:
+                tags = self._order_tags(tags, context)
 
             # Format the output based on section
             if self.section == 2:
@@ -124,6 +165,23 @@ class FormatSectionStep(PipelineStep):
             output_path.write_text(output)
             
             log.info(f"Section {self.section} -> {output_path.name}")
+            
+            # Show tag order breakdown for section 1
+            if self.section == 1 and tags:
+                rating = context.rating
+                char_tags = set(context.get_character_tags())
+                
+                rating_in_tags = [t for t in tags if rating and t == rating]
+                chars_in_tags = [t for t in tags if t in char_tags]
+                general_in_tags = [t for t in tags if t not in char_tags and (not rating or t != rating)]
+                
+                if rating_in_tags:
+                    log.debug(f"  Rating: {rating_in_tags[0]}")
+                if chars_in_tags:
+                    log.debug(f"  Characters ({len(chars_in_tags)}): {', '.join(chars_in_tags[:5])}{'...' if len(chars_in_tags) > 5 else ''}")
+                if general_in_tags:
+                    log.debug(f"  General ({len(general_in_tags)}): {', '.join(general_in_tags[:5])}{'...' if len(general_in_tags) > 5 else ''}")
+            
             if len(output) > 100:
                 log.debug(f"Output preview: {output[:100]}...")
             else:
