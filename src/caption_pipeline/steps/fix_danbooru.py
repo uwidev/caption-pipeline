@@ -5,8 +5,8 @@ FixDanbooruStep: Fix tags to only keep danbooru tags.
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log
-from caption_pipeline.utils.tag_db import load_general_tags_only, load_character_tags_only
+from caption_pipeline.utils.logging_utils import log, section
+from caption_pipeline.utils.tag_db import load_character_tags_only, load_general_tags_only
 
 
 @step_help(
@@ -46,17 +46,17 @@ class FixDanbooruStep(PipelineStep):
     def __init__(
         self,
         whitelist: list[str] | None = None,
-        section: int = -1,  # -1 means all sections
+        target_section: int = -1,  # Renamed from 'section'
     ) -> None:
         """
         Initialize the danbooru fix step.
 
         Args:
             whitelist: Tags to always keep (overrides danbooru-only filter)
-            section: Section to fix (-1 = all, 0 = prepended, 1 = main, 2 = NL)
+            target_section: Section to fix (-1 = all, 0 = prepended, 1 = main, 2 = NL)
         """
         self.whitelist: set[str] = set(whitelist or [])
-        self.section: int = section
+        self.section: int = target_section
         self._general_tags: set[str] | None = None
         self._character_tags: set[str] | None = None
 
@@ -79,91 +79,92 @@ class FixDanbooruStep(PipelineStep):
     def _is_danbooru_tag(self, tag: str) -> bool:
         """
         Check if a tag exists in the danbooru database.
-        
+
         Tags are normalized (lowercase with underscores).
         """
         self._load_databases()
-        
+
         # Check if it's a character tag
         if tag in self._character_tags:
             return True
-        
+
         # Check if it's a general tag
         if tag in self._general_tags:
             return True
-        
+
         return False
 
     def _fix_tags(self, tags: list[str]) -> list[str]:
         """Fix a list of tags to only keep danbooru tags."""
         result = []
-        
+
         for tag in tags:
             # Always keep whitelisted tags
             if tag in self.whitelist:
                 result.append(tag)
                 continue
-            
+
             # Keep if it's a danbooru tag
             if self._is_danbooru_tag(tag):
                 result.append(tag)
                 continue
-            
+
             # Keep special tags (original, borrowed_character)
             if tag in self.SPECIAL_TAGS:
                 result.append(tag)
                 continue
-        
+
         return result
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Fix tags to only keep danbooru tags."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             result = context.copy()
-            
+
             # Determine which sections to fix
             sections_to_fix = []
             if self.section == -1:
                 sections_to_fix = [0, 1]  # Only fix prepended and main tags
             else:
                 sections_to_fix = [self.section]
-            
+
             original_counts = {}
             fixed_counts = {}
             all_removed_tags = set()
-            
-            for section in sections_to_fix:
+
+            for section_idx in sections_to_fix:
                 # Skip NL section (section 2) as it's not tag-based
-                if section == 2:
+                if section_idx == 2:
                     continue
-                
-                tags = context.get_tags(section)
+
+                tags = context.get_tags(section_idx)
                 if not tags:
                     continue
-                
-                original_counts[section] = len(tags)
+
+                original_counts[section_idx] = len(tags)
                 fixed = self._fix_tags(tags)
-                fixed_counts[section] = len(fixed)
-                
+                fixed_counts[section_idx] = len(fixed)
+
                 # Track removed tags
                 removed = set(tags) - set(fixed)
                 all_removed_tags.update(removed)
-                
-                result.set_tags(fixed, section)
-            
+
+                result.set_tags(fixed, section_idx)
+
             # Log results
             if original_counts:
                 total_original = sum(original_counts.values())
                 total_fixed = sum(fixed_counts.values())
                 removed = total_original - total_fixed
-                
+
                 log.info(
-                    f"Danbooru: {total_original} tags → {total_fixed} tags "
-                    f"({removed} removed)"
+                    f"Danbooru: {total_original} tags → {total_fixed} tags ({removed} removed)"
                 )
-                
+
                 # DEBUG: Show all removed tags
                 if all_removed_tags and removed > 0:
-                    log.debug(f"Removed tags ({len(all_removed_tags)}): {', '.join(sorted(all_removed_tags))}")
-            
+                    log.debug(
+                        f"Removed tags ({len(all_removed_tags)}): {', '.join(sorted(all_removed_tags))}"
+                    )
+
             return result

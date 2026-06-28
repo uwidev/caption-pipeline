@@ -4,15 +4,14 @@ CharacterValidationStep: Validate that user-provided grounding tags contain vali
 
 from pathlib import Path
 
-from caption_pipeline.utils.logging_utils import log
-
-
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
+from caption_pipeline.utils.logging_utils import (
+    log,
+    section,
+)
 from caption_pipeline.utils.tag_db import load_character_tags_only
-from caption_pipeline.utils.logging_utils import log
-
 
 
 @step_help(
@@ -31,7 +30,11 @@ This is useful for:
 Note: 'original' and 'borrowed character' are treated as intentional user overrides
 and are considered valid.""",
     options=[
-        {"flag": "--output-file PATH", "help": "Output file for missing characters", "default": "./missing_characters.txt"},
+        {
+            "flag": "--output-file PATH",
+            "help": "Output file for missing characters",
+            "default": "./missing_characters.txt",
+        },
     ],
     example="debug:characters --output-file ./missing.txt",
 )
@@ -105,7 +108,7 @@ class CharacterValidationStep(PipelineStep):
         """
         Process a single context by validating its character tags.
         """
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             is_valid, reason = self._is_valid_character_context(context)
 
             if not is_valid:
@@ -114,11 +117,15 @@ class CharacterValidationStep(PipelineStep):
                     self._missing.append(context.image_path.name)
             else:
                 if context.has_characters():
-                    log.debug(f"✓ Valid character(s) found for {context.image_path.name}: {', '.join(context.character_tags)}")
+                    log.debug(
+                        f"✓ Valid character(s) found for {context.image_path.name}: {', '.join(context.character_tags)}"
+                    )
                 elif context.has_unnamed_character():
                     log.debug(f"✓ Unnamed/original character for {context.image_path.name}")
                 else:
-                    log.debug(f"✓ Character reference found for {context.image_path.name}: {reason}")
+                    log.debug(
+                        f"✓ Character reference found for {context.image_path.name}: {reason}"
+                    )
 
             return context
 
@@ -145,7 +152,9 @@ class CharacterValidationStep(PipelineStep):
             with self.output_file.open("w") as f:
                 for filename in sorted(self._missing):
                     f.write(f"{Path(filename).stem}\n")
-            log.info(f"Found {len(self._missing)} images missing character validation. Written to {self.output_file}")
+            log.info(
+                f"Found {len(self._missing)} images missing character validation. Written to {self.output_file}"
+            )
         else:
             # Remove the file if it exists and is empty
             if self.output_file.exists():

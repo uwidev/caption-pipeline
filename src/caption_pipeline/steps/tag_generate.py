@@ -13,7 +13,11 @@ from transformers import PreTrainedTokenizerBase
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log, log_list_truncated, log_scored_list_truncated
+from caption_pipeline.utils.logging_utils import (
+    log,
+    log_list_truncated,
+    section,
+)
 from caption_pipeline.utils.tag_db import (
     get_character_count_from_tag_confidences,
     load_tag_databases,
@@ -110,7 +114,7 @@ class TagGenerationStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Generate tags for the image."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             self._load_databases()
             self._load_models()
 
@@ -177,7 +181,9 @@ class TagGenerationStep(PipelineStep):
                     f"{char}: {conf:.3f} {'✓' if conf >= self.character_threshold else ' '}"
                     for char, conf in sorted_chars
                 ]
-                log_list_truncated(formatted, "AI-inferenced characters", max_items=10, level="debug")
+                log_list_truncated(
+                    formatted, "AI-inferenced characters", max_items=10, level="debug"
+                )
 
             # Combine general tags (using regular threshold)
             combined_general = self._combine_tags(

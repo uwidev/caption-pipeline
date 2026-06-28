@@ -8,7 +8,7 @@ by keeping the highest confidence tag per category.
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log, log_truncated
+from caption_pipeline.utils.logging_utils import log, log_truncated, section
 
 
 @step_help(
@@ -51,15 +51,15 @@ class FixCountsStep(PipelineStep):
 
     def __init__(
         self,
-        section: int = 1,
+        target_section: int = 1,  # Renamed from 'section'
     ) -> None:
         """
         Initialize the fix counts step.
 
         Args:
-            section: Section to resolve (0=prepended, 1=main, -1=all)
+            target_section: Section to resolve (0=prepended, 1=main, -1=all)
         """
-        self.section: int = section
+        self.section: int = target_section
 
     def name(self) -> str:
         return "fix:counts"
@@ -111,7 +111,7 @@ class FixCountsStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Resolve conflicting count tags."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             result = context.copy()
 
             # Determine which sections to process
@@ -125,24 +125,24 @@ class FixCountsStep(PipelineStep):
             resolved_counts = {}
             all_removed_tags = set()
 
-            for section in sections_to_process:
+            for section_idx in sections_to_process:
                 # Skip NL section (section 2)
-                if section == 2:
+                if section_idx == 2:
                     continue
 
-                tags = context.get_tags(section)
+                tags = context.get_tags(section_idx)
                 if not tags:
                     continue
 
-                original_counts[section] = len(tags)
+                original_counts[section_idx] = len(tags)
                 resolved = self._resolve_counts(tags)
-                resolved_counts[section] = len(resolved)
+                resolved_counts[section_idx] = len(resolved)
 
                 # Track removed tags
                 removed = set(tags) - set(resolved)
                 all_removed_tags.update(removed)
 
-                result.set_tags(resolved, section)
+                result.set_tags(resolved, section_idx)
 
             # Log results
             if original_counts:

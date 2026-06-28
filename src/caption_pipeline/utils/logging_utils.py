@@ -2,60 +2,114 @@
 Logging utilities for the caption pipeline.
 
 Provides:
-- IndentedLogger: Wrapper for loguru with indentation support
-- log: Global instance for consistent logging
-- log_truncated: Function for logging truncated output with continuation
+- configure_logging: Set up loguru with indentation support
+- section: Context manager for indented log sections
+- log_truncated: Log truncated content with continuation
+- log_list_truncated: Log lists with truncation
+- log_scored_list_truncated: Log scored lists with truncation
+- log: Direct access to loguru logger
 """
 
+import sys
 from contextlib import contextmanager
-from loguru import logger
 from typing import Any
 
+from loguru import logger
 
-class IndentedLogger:
-    """Wrapper for loguru that manages indentation levels for structured logging."""
-    
-    def __init__(self, indent_str: str = "  "):
-        self._indent_level = 0
-        self._indent_str = indent_str
-        self._logger = logger
-    
-    @contextmanager
-    def section(self, message: str, level: str = "info"):
-        """Log a section header and indent all subsequent logs."""
-        self._log(level, message)
-        self._indent_level += 1
-        try:
-            yield
-        finally:
-            self._indent_level -= 1
-    
-    def _log(self, level: str, message: str, *args, **kwargs):
-        """Internal log method with indentation."""
-        indent = self._indent_str * self._indent_level
-        # Preserve any extra indentation already in the message
-        if message.startswith(self._indent_str):
-            indent = ""
-        getattr(self._logger, level)(f"{indent}{message}", *args, **kwargs)
-    
-    def info(self, message: str, *args, **kwargs):
-        self._log("info", message, *args, **kwargs)
-    
-    def debug(self, message: str, *args, **kwargs):
-        self._log("debug", message, *args, **kwargs)
-    
-    def warning(self, message: str, *args, **kwargs):
-        self._log("warning", message, *args, **kwargs)
-    
-    def error(self, message: str, *args, **kwargs):
-        self._log("error", message, *args, **kwargs)
-    
-    def success(self, message: str, *args, **kwargs):
-        self._log("success", message, *args, **kwargs)
+# Global indentation state
+_indent_level: list[int] = [0]
+_INDENT_STR: str = "  "
 
 
-# Global instance
-log = IndentedLogger()
+def configure_logging(debug: bool = False) -> None:
+    """
+    Configure loguru with indentation support and colored output.
+
+    Args:
+        debug: Enable debug-level logging
+    """
+    # Remove default handlers
+    logger.remove()
+
+    def add_indentation(record: dict[str, Any]) -> bool:
+        """Add indentation to every log record and clean up module names."""
+        record["extra"]["indent"] = _INDENT_STR * _indent_level[0]
+        
+        # Clean up module name to just the last part
+        # The 'name' field contains the full module path (e.g., 'caption_pipeline.cli')
+        if record.get("name"):
+            # Split by '.' and get the last part
+            record["name"] = record["name"].split(".")[-1]
+        return True
+
+    if debug:
+        level = "DEBUG"
+        format_str = (
+            "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+            "<level>{level: <8}</level> | "
+            "<cyan>{name}</cyan> - "
+            "{extra[indent]}"
+            "<level>{message}</level>"
+        )
+    else:
+        level = "INFO"
+        format_str = (
+            "<green>{time:HH:mm:ss}</green> | "
+            "<level>{level: <8}</level> | "
+            "<cyan>{name}</cyan> - "
+            "{extra[indent]}"
+            "<level>{message}</level>"
+        )
+
+    # Add stdout sink with our formatter
+    logger.add(
+        sys.stdout,
+        level=level,
+        format=format_str,
+        colorize=True,
+        filter=add_indentation,
+    )
+
+    # Silence noisy loggers
+    import logging
+
+    for logger_name in [
+        "httpx",
+        "httpcore",
+        "huggingface_hub",
+        "transformers",
+        "filelock",
+        "urllib3",
+        "PIL",
+    ]:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+@contextmanager
+def section(message: str, level: str = "info"):
+    """
+    Log a section header and indent all subsequent logs within this context.
+
+    Args:
+        message: Section header message
+        level: Log level for the header ('info', 'debug', 'warning', etc.)
+
+    Yields:
+        None
+
+    Example:
+        with section("Processing images"):
+            logger.info("Found 10 images")  # This will be indented
+            with section("Processing image 1"):
+                logger.debug("Loading...")  # Double indented
+    """
+    # Use depth=2 to skip the @contextmanager wrapper
+    getattr(logger.opt(depth=2), level)(message)
+    _indent_level[0] += 1
+    try:
+        yield
+    finally:
+        _indent_level[0] -= 1
 
 
 def log_truncated(
@@ -64,43 +118,31 @@ def log_truncated(
     max_len: int = 64,
     level: str = "info",
     continuation_level: str = "debug",
-    indent: int = 0,
 ) -> None:
     """
-    Log a message with truncated content, showing continuation in a separate log.
-    
-    If content is longer than max_len and level != continuation_level, logs:
-        INFO: message: first 64 chars...
-        DEBUG: continuation: rest of content
-    
-    If level == continuation_level, logs the entire content in one go.
-    If content is shorter, logs only the INFO line.
-    
+    Log a message with truncated content.
+
+    If content is longer than max_len, logs the preview at the specified level
+    and the remainder at continuation_level.
+
     Args:
         message: The prefix message (e.g., "Wrote", "Output", "NL")
         content: The content to log
         max_len: Maximum characters to show in the first log (default: 64)
-        level: Log level for the first line (default: "info")
-        continuation_level: Log level for the continuation (default: "debug")
-        indent: Indentation level (default: 0)
+        level: Log level for the preview (default: "info")
+        continuation_level: Log level for the remainder (default: "debug")
     """
     if not content:
         return
-    
-    indent_str = "  " * indent
-    full_message = f"{indent_str}{message}: "
-    
-    # If level and continuation_level are the same, just log the entire thing
-    # You honestly should just be using 'log' normally, but I suppose this
-    # allows you to prefix the message somewhat.
-    if level == continuation_level or len(content) <= max_len:
-        getattr(log, level)(f"{full_message}{content}")
+
+    if len(content) <= max_len:
+        # depth=1: skip log_truncated, show caller (e.g., cli.py)
+        getattr(logger.opt(depth=1), level)(f"{message}: {content}")
     else:
-        # Truncate and show continuation
         preview = content[:max_len]
         remainder = content[max_len:]
-        getattr(log, level)(f"{full_message}{preview}...")
-        getattr(log, continuation_level)(f"{indent_str}  {remainder}")
+        getattr(logger.opt(depth=1), level)(f"{message}: {preview}...")
+        getattr(logger.opt(depth=1), continuation_level)(f"  {remainder}")
 
 
 def log_list_truncated(
@@ -109,57 +151,35 @@ def log_list_truncated(
     max_items: int = 5,
     level: str = "info",
     continuation_level: str = "debug",
-    indent_str: str = "  ",
 ) -> None:
     """
-    Log a numbered list with truncation, showing continuation at a lower level.
+    Log a numbered list with truncation.
 
-    If items length > max_items and level != continuation_level, logs:
-        INFO: message (12):
-        INFO:   1. item1
-        INFO:   2. item2
-        INFO:   3. item3
-        INFO:   4. item4
-        INFO:   5. item5
-        INFO:   ...
-        DEBUG:   6. item6
-        DEBUG:   7. item7
-        ...
-
-    If level == continuation_level, logs all items at the same level without ellipsis.
-    If items length <= max_items, logs all items at the same level.
+    If items length > max_items, shows first max_items at the specified level
+    and the rest at continuation_level.
 
     Args:
         items: List of items to log
         message: The prefix message (e.g., "Final tags", "Removed tags")
-        max_items: Maximum items to show before truncating (default: 5, -1 show all on level)
-        level: Log level for the first line and visible items (default: "info")
+        max_items: Maximum items to show before truncating (default: 5, -1 = show all)
+        level: Log level for the header and visible items (default: "info")
         continuation_level: Log level for the continuation (default: "debug")
-        indent: Indentation level (default: 0)
     """
     if not items:
         return
 
     total = len(items)
+    getattr(logger.opt(depth=1), level)(f"{message} ({total}):")
 
-    # Log header with count
-    getattr(log, level)(f"{message} ({total}):")
-
-    # If level == continuation_level, show all items at the same level
-    if level == continuation_level or total <= max_items or max_items == -1:
+    if total <= max_items or max_items == -1:
         for i, item in enumerate(items, 1):
-            getattr(log, level)(f"{indent_str}  {i:>3d}. {item}")
+            getattr(logger.opt(depth=1), level)(f"  {i:>3d}. {item}")
     else:
-        # Show first max_items at the specified level
         for i, item in enumerate(items[:max_items], 1):
-            getattr(log, level)(f"{indent_str}  {i:>3d}. {item}")
-
-        # Show ellipsis at the specified level
-        getattr(log, level)(f"{indent_str}  {' ':>3}  ...")
-
-        # Show remaining items at continuation_level
+            getattr(logger.opt(depth=1), level)(f"  {i:>3d}. {item}")
+        getattr(logger.opt(depth=1), level)(f"     ...")
         for i, item in enumerate(items[max_items:], max_items + 1):
-            getattr(log, continuation_level)(f"{indent_str}  {i:>3d}. {item}")
+            getattr(logger.opt(depth=1), continuation_level)(f"  {i:>3d}. {item}")
 
 
 def log_scored_list_truncated(
@@ -168,22 +188,18 @@ def log_scored_list_truncated(
     max_items: int = 5,
     level: str = "info",
     continuation_level: str = "debug",
-    indent_str: str = "  ",
 ) -> None:
     """
     Log a numbered list of scored items with truncation.
 
     Items are formatted as "tag (score)" and shown as a numbered list.
-    If items length > max_items and level != continuation_level, shows first max_items at INFO and rest at DEBUG.
-    If level == continuation_level, shows all items at the same level.
 
     Args:
         items: List of (tag, score) tuples
         message: The prefix message (e.g., "Tags above threshold")
         max_items: Maximum items to show before truncating (default: 5)
-        level: Log level for the first line and visible items (default: "info")
+        level: Log level for the header and visible items (default: "info")
         continuation_level: Log level for the continuation (default: "debug")
-        indent: Indentation level (default: 0)
     """
     if not items:
         return
@@ -195,5 +211,8 @@ def log_scored_list_truncated(
         max_items=max_items,
         level=level,
         continuation_level=continuation_level,
-        indent_str=indent_str,
     )
+
+
+# Export logger for direct use
+log = logger

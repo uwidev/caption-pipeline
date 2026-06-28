@@ -1,4 +1,4 @@
-"""
+F"""
 Command-line interface for the caption pipeline.
 """
 
@@ -25,10 +25,8 @@ from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
 from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguageFilterStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
-from caption_pipeline.utils import (
-    load_tag_databases,
-)
-from caption_pipeline.utils.logging_utils import log, log_truncated
+from caption_pipeline.utils import load_tag_databases
+from caption_pipeline.utils.logging_utils import configure_logging, log, log_truncated, section
 
 # Image MIME types supported
 SUPPORTED_IMAGE_MIMES: set[str] = {
@@ -85,51 +83,7 @@ def normalize_character_tag(tag: str) -> str:
 
 def setup_logging(debug: bool = False) -> None:
     """Setup logging configuration with colors."""
-    # Remove default handlers
-    logger.remove()
-
-    # Configure loguru with colors
-    if debug:
-        # Find the longest module name from all loaded modules
-        max_module_len = 0
-        for name, module in sys.modules.items():
-            if name.startswith("caption_pipeline"):
-                short_name = name.split(".")[-1]
-                max_module_len = max(max_module_len, len(short_name))
-
-        # Fallback if no modules found
-        if max_module_len == 0:
-            max_module_len = 20
-
-        level = "DEBUG"
-        format_str = f"<green>{{time:YYYY-MM-DD HH:mm:ss.SSS}}</green> | <level>{{level: <8}}</level> | <cyan>{{module: <{max_module_len}}}</cyan> - <level>{{message}}</level>"
-    else:
-        level = "INFO"
-        format_str = (
-            "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> - <level>{message}</level>"
-        )
-
-    # Add stdout sink with colors
-    logger.add(
-        sys.stdout,
-        level=level,
-        format=format_str,
-        colorize=True,
-    )
-
-    # Silence noisy loggers
-    import logging
-
-    for logger_name in [
-        "httpx",
-        "httpcore",
-        "huggingface_hub",
-        "transformers",
-        "filelock",
-        "urllib3",
-        "PIL",
-    ]:
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
+    configure_logging(debug)
 
 
 def is_image_file(file_path: Path) -> bool:
@@ -291,13 +245,13 @@ def load_existing_caption(image_path: Path) -> list[list[str]]:
 
         parsed_sections = []
 
-        for idx, section in enumerate(sections):
+        for idx, section_text in enumerate(sections):
             if idx == 2:  # Section 2 is NL - KEEP AS SINGLE STRING
                 # Store the ENTIRE section as a single string
-                parsed_sections.append([section.strip()])
+                parsed_sections.append([section_text.strip()])
             else:
                 # Sections 0 and 1 are tags - split by commas
-                parsed_sections.append(split_and_underscore(section))
+                parsed_sections.append(split_and_underscore(section_text))
 
         # Ensure we have exactly 3 sections
         while len(parsed_sections) < 3:
@@ -454,7 +408,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
 
             case "fix:danbooru_only" | "fix:danbooru" | "fix:db":
                 whitelist = []
-                section = 1
+                target_section = 1  # Renamed from 'section'
 
                 i = 1
                 while i < len(parts):
@@ -463,7 +417,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             whitelist = parts[i + 1].split(",")
                             i += 2
                         case "--section":
-                            section = int(parts[i + 1])
+                            target_section = int(parts[i + 1])
                             i += 2
                         case _:
                             raise ValueError(
@@ -474,20 +428,20 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 steps.append(
                     FixDanbooruStep(
                         whitelist=whitelist,
-                        section=section,
+                        target_section=target_section,
                     )
                 )
 
             case "fix:overlap" | "fix:drop":
-                section = -1
+                target_section = -1
                 keep_scored = False
                 keep_hints = False
-                
+
                 i = 1
                 while i < len(parts):
                     match parts[i]:
                         case "--section":
-                            section = int(parts[i + 1])
+                            target_section = int(parts[i + 1])
                             i += 2
                         case "--keep-scored":
                             keep_scored = True
@@ -500,23 +454,23 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
                                 f"Available flags: --section, --keep-scored, --keep-hints"
                             )
-                
+
                 steps.append(
                     FixOverlapStep(
-                        section=section,
+                        target_section=target_section,
                         keep_scored=keep_scored,
                         keep_hints=keep_hints,
                     )
                 )
 
             case "fix:counts" | "fix:cnt":
-                section = 1
+                target_section = 1
 
                 i = 1
                 while i < len(parts):
                     match parts[i]:
                         case "--section":
-                            section = int(parts[i + 1])
+                            target_section = int(parts[i + 1])
                             i += 2
                         case _:
                             raise ValueError(
@@ -526,7 +480,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
 
                 steps.append(
                     FixCountsStep(
-                        section=section,
+                        target_section=target_section,
                     )
                 )
 
@@ -640,7 +594,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
             case "tag:manipulate" | "tag:do":
                 operation = "prepend"
                 tags = []
-                section = 1
+                target_section = 1
                 remove_duplicates = True
                 target_position = -1
 
@@ -658,7 +612,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                                 tags = [tags_str]
                             i += 2
                         case "--section" | "--on":
-                            section = int(parts[i + 1])
+                            target_section = int(parts[i + 1])
                             i += 2
                         case "--no-remove-duplicates":
                             remove_duplicates = False
@@ -678,7 +632,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         TagManipulateStep(
                             operation=operation,
                             tags=tags,
-                            section=section,
+                            target_section=target_section,
                             remove_duplicates=remove_duplicates,
                             target_position=target_position,
                         )
@@ -984,7 +938,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 )
 
             case "format:section" | "format:s":
-                section = 1
+                target_section = 1
                 output_dir = Path("./done/")
                 suffix = ""
                 delimiter = ", "
@@ -994,7 +948,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 while i < len(parts):
                     match parts[i]:
                         case "--section":
-                            section = int(parts[i + 1])
+                            target_section = int(parts[i + 1])
                             i += 2
                         case "--output-dir":
                             output_dir = Path(parts[i + 1])
@@ -1016,7 +970,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
 
                 steps.append(
                     FormatSectionStep(
-                        section=section,
+                        target_section=target_section,
                         output_dir=output_dir,
                         suffix=suffix,
                         delimiter=delimiter,
@@ -1119,115 +1073,116 @@ Use --help-steps to see detailed step reference.
     if args.command == "process":
         setup_logging(args.debug)
 
-        log.info("Starting caption pipeline")
-        log.debug("Debug mode enabled")
+        with section("Starting caption pipeline"):
+            log.debug("Debug mode enabled")
 
-        # Find input files
-        input_path = Path(args.input)
+            # Find input files
+            input_path = Path(args.input)
 
-        if input_path.is_dir():
-            log.info(f"Processing directory: {input_path}")
-            input_files = find_images_in_directory(
-                input_path,
-                recursive=args.recursive,
-            )
-        elif input_path.is_file():
-            if is_image_file(input_path):
-                input_files = [input_path]
-            else:
-                log.error(f"File is not a supported image: {input_path}")
-                return
-        else:
-            log.error(f"Input path does not exist: {input_path}")
-            return
-
-        if not input_files:
-            log.warning(f"No image files found in {input_path}")
-            return
-
-        log.info(f"Found {len(input_files)} image files to process")
-
-        pipeline = Pipeline(error_handling="skip")
-        steps = parse_steps(args)
-        for step in steps:
-            pipeline.add_step(step)
-
-        contexts: list[ImageContext] = []
-
-        for file_path in input_files:
-            with log.section(f"Processing: {file_path.name}"):
-                # Load the caption tags from existing .txt file
-                tags = load_existing_caption(file_path)
-
-                # Section 0: Prepended tags
-                if tags[0]:
-                    tags_str = ", ".join(tags[0])
-                    log_truncated(f"Prepended ({len(tags[0])})", tags_str, max_len=64)
-                else:
-                    log.info("Prepended: (none)")
-
-                # Section 1: Main tags
-                if tags[1]:
-                    log.info(
-                        f"Main ({len(tags[1])}): {', '.join(tags[1][:10])}{'...' if len(tags[1]) > 10 else ''}"
-                    )
-                else:
-                    log.info("Main: (none)")
-
-                # Section 2: NL caption
-                if tags[2] and tags[2][0]:
-                    caption_preview = (
-                        tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
-                    )
-                    log.info(f"NL: {caption_preview}")
-                else:
-                    log.info("NL: (none)")
-
-                # Combine sections 0 and 1 for processing
-                all_tags = tags[0] + tags[1]
-
-                # Extract rating FIRST (removes rating tags from all_tags)
-                tags_without_ratings, rating = extract_rating(all_tags)
-
-                # Log extracted rating at INFO level
-                if rating:
-                    log.info(f"Extracted rating: {rating}")
-                else:
-                    log.info("Extracted rating: (none)")
-
-                # Extract character hints from tags without ratings
-                remaining_tags, character_tags = extract_character_hints(tags_without_ratings)
-
-                # Log extracted characters at INFO level
-                if character_tags:
-                    log.info(f"Characters ({len(character_tags)}): {', '.join(character_tags)}")
-                else:
-                    log.info("Characters: (none)")
-
-                # Reconstruct the tag sections
-                modified_tags = [
-                    [],  # section 0 - prepended tags
-                    remaining_tags,  # section 1 - main tags
-                    tags[2] if len(tags) > 2 else [],  # section 2 - NL caption
-                ]
-
-                # Create the context
-                context = ImageContext(
-                    image_path=file_path,
-                    source_path=file_path,
-                    tags=modified_tags,
-                    original_tags=tags,
-                    character_tags=character_tags,
-                    rating=rating,
+            if input_path.is_dir():
+                log.info(f"Processing directory: {input_path}")
+                input_files = find_images_in_directory(
+                    input_path,
+                    recursive=args.recursive,
                 )
-                contexts.append(context)
+            elif input_path.is_file():
+                if is_image_file(input_path):
+                    input_files = [input_path]
+                else:
+                    log.error(f"File is not a supported image: {input_path}")
+                    return
+            else:
+                log.error(f"Input path does not exist: {input_path}")
+                return
 
-        results = pipeline.run(contexts)
+            if not input_files:
+                log.warning(f"No image files found in {input_path}")
+                return
 
-        log.info(f"Processed {len(results)} images")
+            log.info(f"Found {len(input_files)} image files to process")
 
-        for context in results:
-            context.save_image()
+            pipeline = Pipeline(error_handling="skip")
+            steps = parse_steps(args)
+            for step in steps:
+                pipeline.add_step(step)
+
+            contexts: list[ImageContext] = []
+
+            with section(f"Loading {len(input_files)} images"):
+                for file_path in input_files:
+                    with section(f"Processing: {file_path.name}"):
+                        # Load the caption tags from existing .txt file
+                        tags = load_existing_caption(file_path)
+
+                        # Section 0: Prepended tags
+                        if tags[0]:
+                            tags_str = ", ".join(tags[0])
+                            log_truncated(f"Prepended ({len(tags[0])})", tags_str, max_len=64)
+                        else:
+                            log.info("Prepended: (none)")
+
+                        # Section 1: Main tags
+                        if tags[1]:
+                            log.info(
+                                f"Main ({len(tags[1])}): {', '.join(tags[1][:10])}{'...' if len(tags[1]) > 10 else ''}"
+                            )
+                        else:
+                            log.info("Main: (none)")
+
+                        # Section 2: NL caption
+                        if tags[2] and tags[2][0]:
+                            caption_preview = (
+                                tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
+                            )
+                            log.info(f"NL: {caption_preview}")
+                        else:
+                            log.info("NL: (none)")
+
+                        # Combine sections 0 and 1 for processing
+                        all_tags = tags[0] + tags[1]
+
+                        # Extract rating FIRST (removes rating tags from all_tags)
+                        tags_without_ratings, rating = extract_rating(all_tags)
+
+                        # Log extracted rating at INFO level
+                        if rating:
+                            log.info(f"Extracted rating: {rating}")
+                        else:
+                            log.info("Extracted rating: (none)")
+
+                        # Extract character hints from tags without ratings
+                        remaining_tags, character_tags = extract_character_hints(tags_without_ratings)
+
+                        # Log extracted characters at INFO level
+                        if character_tags:
+                            log.info(f"Characters ({len(character_tags)}): {', '.join(character_tags)}")
+                        else:
+                            log.info("Characters: (none)")
+
+                        # Reconstruct the tag sections
+                        modified_tags = [
+                            [],  # section 0 - prepended tags
+                            remaining_tags,  # section 1 - main tags
+                            tags[2] if len(tags) > 2 else [],  # section 2 - NL caption
+                        ]
+
+                        # Create the context
+                        context = ImageContext(
+                            image_path=file_path,
+                            source_path=file_path,
+                            tags=modified_tags,
+                            original_tags=tags,
+                            character_tags=character_tags,
+                            rating=rating,
+                        )
+                        contexts.append(context)
+
+            results = pipeline.run(contexts)
+
+            log.info(f"Processed {len(results)} images")
+
+            for context in results:
+                context.save_image()
 
     else:
         parser.print_help()

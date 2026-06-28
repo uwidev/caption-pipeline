@@ -7,7 +7,7 @@ from imgutils.tagging import drop_overlap_tags
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log, log_truncated
+from caption_pipeline.utils.logging_utils import log, log_truncated, section
 
 
 @step_help(
@@ -52,7 +52,7 @@ class FixOverlapStep(PipelineStep):
 
     def __init__(
         self,
-        section: int = -1,  # -1 means all sections
+        target_section: int = -1,  # Renamed from 'section'
         keep_scored: bool = False,
         keep_hints: bool = False,
     ) -> None:
@@ -60,11 +60,11 @@ class FixOverlapStep(PipelineStep):
         Initialize the fix overlap step.
 
         Args:
-            section: Section to fix (-1 = all, 0 = prepended, 1 = main, 2 = NL)
+            target_section: Section to fix (-1 = all, 0 = prepended, 1 = main, 2 = NL)
             keep_scored: Whether to keep tag scores (requires inferenced_tags)
             keep_hints: Whether to preserve original hinted tags
         """
-        self.section: int = section
+        self.section: int = target_section
         self.keep_scored: bool = keep_scored
         self.keep_hints: bool = keep_hints
 
@@ -103,7 +103,7 @@ class FixOverlapStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Fix overlapping tags."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             result = context.copy()
             
             # Get original tags for preservation if keep_hints is enabled
@@ -124,16 +124,16 @@ class FixOverlapStep(PipelineStep):
             all_removed_tags = set()
             all_preserved_tags = set()
             
-            for section in sections_to_fix:
+            for section_idx in sections_to_fix:
                 # Skip NL section (section 2) as it's not tag-based
-                if section == 2:
+                if section_idx == 2:
                     continue
                 
-                tags = context.get_tags(section)
+                tags = context.get_tags(section_idx)
                 if not tags:
                     continue
                 
-                original_counts[section] = len(tags)
+                original_counts[section_idx] = len(tags)
                 
                 # If we're keeping scores and have inferenced_tags, use scored fixing
                 if self.keep_scored and context.inferenced_tags:
@@ -154,14 +154,14 @@ class FixOverlapStep(PipelineStep):
                         fixed = list(set(fixed) | original_removed)
                         all_preserved_tags.update(original_removed)
                 
-                fixed_counts[section] = len(fixed)
+                fixed_counts[section_idx] = len(fixed)
                 
                 # Track all removed tags (for logging)
-                if original_counts[section] > fixed_counts[section]:
+                if original_counts[section_idx] > fixed_counts[section_idx]:
                     removed = set(tags) - set(fixed)
                     all_removed_tags.update(removed)
                 
-                result.set_tags(fixed, section)
+                result.set_tags(fixed, section_idx)
             
             # Log results
             if original_counts:

@@ -9,7 +9,7 @@ from math import ceil
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log, log_truncated
+from caption_pipeline.utils.logging_utils import log, log_truncated, section
 from caption_pipeline.utils.tokenizer import get_tokenizer
 
 
@@ -99,9 +99,9 @@ class TagResolveStep(PipelineStep):
     def _get_original_tags(self, context: ImageContext) -> set[str]:
         """Get original hinted tags as a set (sections 0 and 1 only)."""
         original_flat = []
-        for section in [0, 1]:
-            if section < len(context.original_tags):
-                original_flat.extend(context.original_tags[section])
+        for section_idx in [0, 1]:
+            if section_idx < len(context.original_tags):
+                original_flat.extend(context.original_tags[section_idx])
         return set(original_flat)
 
     def _drop_tags_safely(self, tags: list[str], target_tokens: int, original_set: set[str]) -> list[str]:
@@ -145,7 +145,7 @@ class TagResolveStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Resolve tags to fit within CLIP limits."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             tags = context.get_tags(section=1)
             if not tags:
                 return context

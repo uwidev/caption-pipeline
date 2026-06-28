@@ -35,9 +35,15 @@ from caption_pipeline.utils.model_manager import (
     ModelManager
 )
 from caption_pipeline.utils.logging_utils import (
-    IndentedLogger,
+    # Core logging
     log,
+    configure_logging,
+    # Context management
+    section,
+    # Truncation helpers
     log_truncated,
+    log_list_truncated,
+    log_scored_list_truncated,
 )
 
 __all__ = [
@@ -67,7 +73,10 @@ __all__ = [
     "LlamaServerConfig",
     "ModelManager",
     # Logging
-    "IndentedLogger",
     "log",
+    "configure_logging",
+    "section",
     "log_truncated",
+    "log_list_truncated",
+    "log_scored_list_truncated",
 ]

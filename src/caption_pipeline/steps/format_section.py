@@ -7,7 +7,7 @@ from pathlib import Path
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.steps.format_base import BaseFormatStep
-from caption_pipeline.utils.logging_utils import log, log_truncated
+from caption_pipeline.utils.logging_utils import log, log_truncated, section
 
 
 @step_help(
@@ -69,7 +69,7 @@ class FormatSectionStep(BaseFormatStep):
 
     def __init__(
         self,
-        section: int = 1,
+        target_section: int = 1,  # Renamed from 'section'
         output_dir: Path | None = None,
         suffix: str = "",
         delimiter: str = ", ",
@@ -77,7 +77,7 @@ class FormatSectionStep(BaseFormatStep):
     ) -> None:
         """Initialize the format section step."""
         super().__init__(
-            section=section,
+            section=target_section,
             output_dir=output_dir,
             suffix=suffix,
             delimiter=delimiter,
@@ -89,7 +89,7 @@ class FormatSectionStep(BaseFormatStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Output the specified section."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             # Build ordered tags and get breakdown
             tags, breakdown = self._build_ordered_tags(context)
 

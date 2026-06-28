@@ -4,7 +4,7 @@ TagManipulateStep: Add, remove, reorder, or move tags.
 
 from typing import Literal
 
-from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.logging_utils import log, section
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
@@ -61,7 +61,7 @@ class TagManipulateStep(PipelineStep):
         self,
         operation: Literal["prepend", "append", "replace", "remove", "move"],
         tags: list[str],
-        section: int = 1,
+        target_section: int = 1,  # Renamed from 'section'
         remove_duplicates: bool = True,
         target_position: int = -1,  # -1 = end, 0 = beginning, or specific index
     ):
@@ -71,14 +71,14 @@ class TagManipulateStep(PipelineStep):
         Args:
             operation: The operation to perform
             tags: Tags to manipulate
-            section: Which section to modify
+            target_section: Which section to modify
             remove_duplicates: Whether to remove duplicates after operation
             target_position: For 'move' operation, where to move tags to
                             -1 = end, 0 = beginning, >0 = specific index
         """
         self.operation = operation
         self.tags = tags
-        self.section = section
+        self.section = target_section
         self.remove_duplicates = remove_duplicates
         self.target_position = target_position
 
@@ -91,7 +91,7 @@ class TagManipulateStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Apply tag manipulation."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             current_tags = context.get_tags(section=self.section)
 
             if self.operation == "prepend":

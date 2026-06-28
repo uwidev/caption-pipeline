@@ -23,7 +23,12 @@ from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.prompts import TORIIGATE_PROMPTS
 from caption_pipeline.utils.llama_server import LlamaServer, LlamaServerConfig
-from caption_pipeline.utils.logging_utils import log, log_list_truncated, log_truncated
+from caption_pipeline.utils.logging_utils import (
+    log,
+    log_list_truncated,
+    log_truncated,
+    section,
+)
 from caption_pipeline.utils.tag_db import get_display_name, query_character
 
 load_dotenv()
@@ -370,7 +375,7 @@ class TagNaturalLanguageStep(PipelineStep):
         The server is assumed to be already running when this is called.
         """
         # Prepare metadata for THIS image (logs appear here)
-        with log.section("Processing: {context.image_path}"):
+        with section("Processing: {context.image_path}"):
             metadata = self._prepare_metadata(context)
 
             for attempt in range(self.max_retries):
@@ -684,16 +689,18 @@ class TagNaturalLanguageStep(PipelineStep):
                     if self.debug:
                         if popular_tags:
                             log_list_truncated(
-                                popular_tags, 
-                                f"Popular tags for '{char_name}'", 
-                                max_items=10, 
-                                level="debug"
+                                popular_tags,
+                                f"Popular tags for '{char_name}'",
+                                max_items=10,
+                                level="debug",
                             )
                         else:
                             log.debug(f"Popular tags for '{char_name}': (none)")
 
                     if self.debug and description:
-                        log_truncated(f"Description for '{char_name}'", description, max_len=64, level="debug")
+                        log_truncated(
+                            f"Description for '{char_name}'", description, max_len=64, level="debug"
+                        )
                 else:
                     # No data found - assume unnamed/original character
                     popular_tags = []
@@ -736,18 +743,18 @@ class TagNaturalLanguageStep(PipelineStep):
         # ===== DEBUG: Log full metadata =====
         if self.debug:
             log.debug("Full metadata sent to model:")
-            
+
             # Log tags with proper formatting
             tags_str = ", ".join(metadata["tags"])
             log_truncated("  tags", tags_str, max_len=64, level="debug")
-            
+
             # Log characters
             if metadata["characters"]:
                 chars_str = ", ".join(metadata["characters"])
                 log_truncated("  characters", chars_str, max_len=64, level="debug")
             else:
                 log.debug("  characters: (none)")
-            
+
             # Log char_p_tags
             if metadata["char_p_tags"]["chars"]:
                 log.debug("  char_p_tags:")
@@ -759,7 +766,7 @@ class TagNaturalLanguageStep(PipelineStep):
                         log.debug(f"    {char_name}: (none)")
             else:
                 log.debug("  char_p_tags: (none)")
-            
+
             # Log char_descr
             if metadata["char_descr"]["chars"]:
                 log.debug("  char_descr:")

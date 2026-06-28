@@ -7,7 +7,11 @@ from pathlib import Path
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.steps.format_base import BaseFormatStep
-from caption_pipeline.utils.logging_utils import log, log_truncated
+from caption_pipeline.utils.logging_utils import (
+    log,
+    log_truncated,
+    section,
+)
 
 
 def normalize_tag_for_comparison(tag: str) -> str:
@@ -119,16 +123,18 @@ class FormatJoinStep(BaseFormatStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         """Join and save the caption."""
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             # === SECTION 0: Prepended tags ===
             section0, breakdown0 = self._format_section(context.tags[0])
             if breakdown0["count"] > 0:
-                log.debug(f"  Prepended ({breakdown0['count']}): {', '.join(breakdown0['preview'])}{'...' if breakdown0['count'] > 5 else ''}")
+                log.debug(
+                    f"  Prepended ({breakdown0['count']}): {', '.join(breakdown0['preview'])}{'...' if breakdown0['count'] > 5 else ''}"
+                )
 
             # === SECTION 1: Main tags ===
             main_tags, breakdown1 = self._build_ordered_tags(context)
             section1, _ = self._format_section(main_tags)
-            
+
             # Log breakdown from _build_ordered_tags
             self._log_breakdown(breakdown1)
 

@@ -21,7 +21,10 @@ from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.prompts import NL_FILTER_SYSTEM_PROMPT
 from caption_pipeline.utils import OllamaConfig, OllamaManager
-from caption_pipeline.utils.logging_utils import log
+from caption_pipeline.utils.logging_utils import (
+    log,
+    section,
+)
 
 
 @step_help(
@@ -122,7 +125,7 @@ class TagNaturalLanguageFilterStep(PipelineStep):
 
         This runs after the model is already loaded by process_batch().
         """
-        with log.section(f"Processing: {context.image_path.name}"):
+        with section(f"Processing: {context.image_path.name}"):
             nl_caption: list[str] = context.get_tags(section=2)
             if not nl_caption or not nl_caption[0]:
                 log.debug(f"No NL caption to filter for {context.image_path.name}")
