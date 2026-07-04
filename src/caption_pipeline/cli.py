@@ -211,57 +211,72 @@ def load_existing_caption(image_path: Path) -> list[list[str]]:
     if not content:
         return [[], [], []]
 
-    def split_and_underscore(text: str) -> list[str]:
-        """Split tags by comma, handling both ', ' and ',', and convert space to underscore."""
-        if not text or text.strip() == "":
+def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[str]]]:
+    """
+    Load existing caption file.
+
+    Returns:
+        Tuple of (raw_sections, processed_sections)
+        - raw_sections:   list of 3 sections, each section is a list of stripped tag strings
+        - processed_sections: same structure, but tags are lowercased and spaces → underscores
+        For section 2 (NL), both contain a list with a single string (the whole caption).
+    """
+    caption_path = image_path.with_suffix(".txt")
+    if not caption_path.exists():
+        return [[], [], []], [[], [], []]
+
+    content = caption_path.read_text().strip()
+    if not content:
+        return [[], [], []], [[], [], []]
+
+    # --- helper: split tags by comma and strip ---
+    def split_tags(raw: str) -> list[str]:
+        if not raw or raw.strip() == "":
             return []
-        # Split by comma and clean each tag
-        tags = [t.strip().replace(" ", "_") for t in text.split(",") if t.strip()]
-        return tags
+        return [t.strip() for t in raw.split(",") if t.strip()]
 
-    # Check if we have sections separated by " ||| "
-    # Handle case where content might start with "|||" or " |||"
+    # --- helper: normalize a single tag ---
+    def normalize_tag(tag: str) -> str:
+        return tag.lower().strip().replace(" ", "_")
+
+    raw_sections = [[], [], []]
+    processed_sections = [[], [], []]
+
+    # Handle leading "|||" (means section 0 is empty)
     normalized_content = content
-
-    # If the content starts with "|||" (with or without space), treat first section as empty
     if normalized_content.startswith("|||"):
-        normalized_content = " " + normalized_content  # Add space to make parsing consistent
+        normalized_content = " " + normalized_content
     elif normalized_content.startswith(" |||"):
-        # Already has leading space, keep as is
-        pass
+        pass  # already has leading space
 
     if " ||| " in normalized_content:
-        sections = normalized_content.split(" ||| ")
+        parts = normalized_content.split(" ||| ")
+        parts = [p.strip() for p in parts]
 
-        # Strip whitespace from each section
-        sections = [s.strip() for s in sections]
+        # If first part is empty, we had leading "|||"
+        if parts and parts[0] == "":
+            parts = parts[1:]          # remove the empty first
+            parts = [""] + parts       # re‑insert empty section 0
 
-        # Handle the case where the first section is empty (content starts with "|||")
-        if sections and sections[0] == "":
-            sections = sections[1:]  # Remove the empty first section
-            # Now we have [section0, section1, section2] but section0 was empty
-            # So we need to add an empty section0 back
-            sections = [""] + sections
+        # Ensure exactly 3 sections
+        while len(parts) < 3:
+            parts.append("")
 
-        parsed_sections = []
-
-        for idx, section_text in enumerate(sections):
-            if idx == 2:  # Section 2 is NL - KEEP AS SINGLE STRING
-                # Store the ENTIRE section as a single string
-                parsed_sections.append([section_text.strip()])
+        for idx, section_text in enumerate(parts):
+            if idx == 2:  # NL section
+                raw_sections[2] = [section_text]
+                processed_sections[2] = [section_text]  # no normalisation
             else:
-                # Sections 0 and 1 are tags - split by commas
-                parsed_sections.append(split_and_underscore(section_text))
-
-        # Ensure we have exactly 3 sections
-        while len(parsed_sections) < 3:
-            parsed_sections.append([])
-
-        return parsed_sections
+                raw_tags = split_tags(section_text)
+                raw_sections[idx] = raw_tags
+                processed_sections[idx] = [normalize_tag(t) for t in raw_tags]
     else:
-        # No sections - treat as single tag list (section 1)
-        tags = split_and_underscore(content)
-        return [[], tags, []]
+        # No delimiter: treat entire content as section 1 (main tags)
+        raw_tags = split_tags(content)
+        raw_sections[1] = raw_tags
+        processed_sections[1] = [normalize_tag(t) for t in raw_tags]
+
+    return raw_sections, processed_sections
 
 
 def extract_rating(tags: list[str]) -> tuple[list[str], str | None]:
@@ -962,67 +977,94 @@ Use --help-steps to see detailed step reference.
             with section(f"Loading {len(input_files)} images"):
                 for file_path in input_files:
                     with section(f"Processing: {file_path.name}"):
-                        # Load the caption tags from existing .txt file
-                        tags = load_existing_caption(file_path)
+                        # Load raw and processed sections
+                        raw_sections, processed_sections = load_existing_caption(file_path)
 
-                        # Section 0: Prepended tags
+                        # --- Log raw sections ---
+                        log.info("--- Raw sections ---")
+                        if raw_sections[0]:
+                            tags_str = ", ".join(raw_sections[0])
+                            log_truncated(f"Raw Section 0 ({len(raw_sections[0])})", tags_str, max_len=64)
+                        else:
+                            log.info("Raw Section 0: (none)")
+
+                        if raw_sections[1]:
+                            tags_str = ", ".join(raw_sections[1])
+                            log_truncated(f"Raw Section 1 ({len(raw_sections[1])})", tags_str, max_len=64)
+                        else:
+                            log.info("Raw Section 1: (none)")
+
+                        if raw_sections[2] and raw_sections[2][0]:
+                            caption_preview = raw_sections[2][0][:100] + "..." if len(raw_sections[2][0]) > 100 else raw_sections[2][0]
+                            log.info(f"Raw Section 2 (NL): {caption_preview}")
+                        else:
+                            log.info("Raw Section 2: (none)")
+
+                        # --- Use processed sections for all downstream logic ---
+                        tags = processed_sections  # list of 3 lists: tags[0], tags[1], tags[2]
+
+                        # --- Log processed sections ---
+                        log.info("--- Processed sections ---")
                         if tags[0]:
                             tags_str = ", ".join(tags[0])
-                            log_truncated(f"Prepended ({len(tags[0])})", tags_str, max_len=64)
+                            log_truncated(f"Processed Section 0 ({len(tags[0])})", tags_str, max_len=64)
                         else:
-                            log.info("Prepended: (none)")
+                            log.info("Processed Section 0: (none)")
 
-                        # Section 1: Main tags
                         if tags[1]:
-                            log.info(
-                                f"Main ({len(tags[1])}): {', '.join(tags[1][:10])}{'...' if len(tags[1]) > 10 else ''}"
-                            )
+                            tags_str = ", ".join(tags[1])
+                            log_truncated(f"Processed Section 1 ({len(tags[1])})", tags_str, max_len=64)
                         else:
-                            log.info("Main: (none)")
+                            log.info("Processed Section 1: (none)")
 
-                        # Section 2: NL caption
                         if tags[2] and tags[2][0]:
-                            caption_preview = (
-                                tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
-                            )
-                            log.info(f"NL: {caption_preview}")
+                            caption_preview = tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
+                            log.info(f"Processed Section 2 (NL): {caption_preview}")
                         else:
-                            log.info("NL: (none)")
+                            log.info("Processed Section 2: (none)")
 
-                        # Combine sections 0 and 1 for processing
-                        all_tags = tags[0] + tags[1]
+                        # Process section 0
+                        section_0_remaining, section_0_characters = extract_character_hints(
+                            tags[0] if len(tags) > 0 else []
+                        )
+                        section_0_remaining_no_rating, section_0_rating = extract_rating(section_0_remaining)
 
-                        # Extract rating FIRST (removes rating tags from all_tags)
-                        tags_without_ratings, rating = extract_rating(all_tags)
+                        # Process section 1
+                        section_1_remaining, section_1_characters = extract_character_hints(
+                            tags[1] if len(tags) > 1 else []
+                        )
+                        section_1_remaining_no_rating, section_1_rating = extract_rating(section_1_remaining)
 
-                        # Log extracted rating at INFO level
+                        # Combine character tags from both sections
+                        character_tags = list(set(section_0_characters + section_1_characters))
+
+                        # Rating: prefer section 0, otherwise section 1
+                        rating = section_0_rating if section_0_rating else section_1_rating
+
+                        # Log extracted rating and characters
                         if rating:
                             log.info(f"Extracted rating: {rating}")
                         else:
                             log.info("Extracted rating: (none)")
 
-                        # Extract character hints from tags without ratings
-                        remaining_tags, character_tags = extract_character_hints(tags_without_ratings)
-
-                        # Log extracted characters at INFO level
                         if character_tags:
                             log.info(f"Characters ({len(character_tags)}): {', '.join(character_tags)}")
                         else:
                             log.info("Characters: (none)")
 
-                        # Reconstruct the tag sections
+                        # Build modified tags: sections stay separate
                         modified_tags = [
-                            [],  # section 0 - prepended tags
-                            remaining_tags,  # section 1 - main tags
-                            tags[2] if len(tags) > 2 else [],  # section 2 - NL caption
+                            section_0_remaining_no_rating,          # section 0 cleaned
+                            section_1_remaining_no_rating,          # section 1 cleaned
+                            tags[2] if len(tags) > 2 else [],       # NL unchanged
                         ]
 
-                        # Create the context
+                        # Create context
                         context = ImageContext(
                             image_path=file_path,
                             source_path=file_path,
                             tags=modified_tags,
-                            original_tags=tags,
+                            original_tags=tags,                     # processed sections (for reference)
                             character_tags=character_tags,
                             rating=rating,
                         )
