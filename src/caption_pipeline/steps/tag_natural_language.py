@@ -580,17 +580,21 @@ class TagNaturalLanguageStep(PipelineStep):
 
     def _prepare_metadata(self, context: ImageContext) -> dict[str, Any]:
         """Prepare metadata for the prompt."""
-        tags = context.get_tags(section=1)
+        # Get all tags from section 1
+        all_tags = context.get_tags(section=1)
+        character_tags = context.get_character_tags()
 
-        if not tags and not self.require_tags:
-            tags = context.get_tags(section=0)
-            if not tags:
+        # Remove character tags from the tags list to avoid duplication
+        tags_for_prompt = [t for t in all_tags if t not in character_tags]
+
+        if not tags_for_prompt and not self.require_tags:
+            tags_for_prompt = context.get_tags(section=0)  # fallback to prepended
+            if not tags_for_prompt:
                 log.debug("No tags found - generating NL caption from image only")
-                tags = []
 
         # ===== DEBUG: Log grounding tags =====
-        if self.debug and tags:
-            log_list_truncated(tags, "Grounding tags", max_items=10, level="debug")
+        if self.debug and tags_for_prompt:
+            log_list_truncated(tags_for_prompt, "Grounding tags (characters removed)", max_items=10, level="debug")
 
         character_tags = context.get_character_tags()
 
@@ -606,14 +610,14 @@ class TagNaturalLanguageStep(PipelineStep):
 
         # Handle unnamed/original character case
         if context.has_unnamed_character():
-            tags_with_control = tags.copy() if tags else []
-            if "original" not in tags_with_control:
-                tags_with_control.append("original")
+            # Ensure "original" is in the prompt tags if not already
+            if "original" not in tags_for_prompt:
+                tags_for_prompt.append("original")
                 if self.debug:
                     log.debug("Added 'original' control signal for unnamed character")
 
             metadata = {
-                "tags": tags_with_control,
+                "tags": tags_for_prompt,
                 "characters": [],
                 "char_p_tags": {"chars": {}, "skins": {}},
                 "char_descr": {"chars": {}, "skins": {}},
@@ -665,13 +669,15 @@ class TagNaturalLanguageStep(PipelineStep):
                 char_p_tags["chars"][char_name] = popular_tags
                 char_descr["chars"][char_name] = description
 
-            tags_with_control = tags.copy() if tags else []
+            # Ensure the prompt tags have the control signal if characters exist
+            if "original" not in tags_for_prompt:
+                # We do not add "original" for named characters
+                pass
 
         else:
             # No characters at all - add control signal to prevent guessing
-            tags_with_control = tags.copy() if tags else []
-            if "original" not in tags_with_control:
-                tags_with_control.append("original")
+            if "original" not in tags_for_prompt:
+                tags_for_prompt.append("original")
                 if self.debug:
                     log.debug("Added 'original' control signal for ToriiGate")
             char_p_tags["chars"]["DO NOT CAPTION CHARACTER NAME"] = []
@@ -680,7 +686,7 @@ class TagNaturalLanguageStep(PipelineStep):
                 log.debug("Added 'DO NOT CAPTION CHARACTER NAME' control signal")
 
         metadata = {
-            "tags": tags_with_control,
+            "tags": tags_for_prompt,  # <-- now filtered
             "characters": character_tags if character_tags else [],
             "char_p_tags": char_p_tags,
             "char_descr": char_descr,

@@ -16,9 +16,9 @@ class BaseFormatStep(PipelineStep):
     Base class for formatting steps.
 
     Provides shared functionality:
-    - Tag ordering: Rating → Character → General
     - Tag formatting with delimiter and spacing
     - Output saving
+    - Logging a breakdown of tag categories (for section 1)
     """
 
     SPECIAL_TAGS = {"original", "borrowed_character"}
@@ -35,10 +35,10 @@ class BaseFormatStep(PipelineStep):
         Initialize the base format step.
 
         Args:
-            section: Section to format (0=prepended, 1=main, 2=NL)
+            section: Section to format (0, 1, 2)
             output_dir: Output directory for the file
             suffix: Suffix to add to the output filename
-            delimiter: Delimiter for tags (sections 0 and 1)
+            delimiter: Delimiter for tags (tags sections)
             use_spaces: Convert underscores to spaces in tags
         """
         self.section: int = section
@@ -47,66 +47,58 @@ class BaseFormatStep(PipelineStep):
         self.delimiter: str = delimiter
         self.use_spaces: bool = use_spaces
 
-    def _build_ordered_tags(self, context: ImageContext) -> tuple[list[str], dict[str, Any]]:
+    def _categorize_tags(self, tags: list[str], context: ImageContext) -> tuple[list[str], dict[str, Any]]:
         """
-        Build and order tags for section 1 (main tags).
-
-        Order: Rating → Special Tags → Character Tags → General Tags
+        Categorize tags for logging (does NOT reorder).
 
         Returns:
-            Tuple of (ordered_tags, breakdown)
-            - ordered_tags: List of ordered tags in display form
-            - tags: Dict with 'rating', 'special', 'characters', 'general' counts and previews
+            Tuple of (tags_list, breakdown)
+            - tags_list: the original tags (unchanged)
+            - breakdown: dict with 'rating', 'special', 'characters', 'general' lists
         """
         if self.section != 1:
-            tags = context.get_tags(self.section)
+            # For sections 0 and 2, we just return the tags as-is and a simple breakdown
             return tags, {"count": len(tags), "preview": tags[:5]}
 
         rating = context.rating
         character_tags = context.get_character_tags()
 
-        # Get the current main tags (characters and rating already removed)
-        tags = context.get_tags(1)
+        # Categorize the existing tags
+        special_tags = []
+        character_found = []
+        general_tags = []
+        rating_found = None
 
-        # Start with rating if it exists
-        ordered = []
+        for tag in tags:
+            if rating and tag == rating:
+                rating_found = tag
+            elif tag in self.SPECIAL_TAGS:
+                special_tags.append(tag)
+            elif tag in character_tags:
+                character_found.append(tag)
+            else:
+                general_tags.append(tag)
+
         breakdown = {
-            "rating": None,
-            "special": [],
-            "characters": [],
-            "general": [],
+            "rating": rating_found,
+            "special": special_tags,
+            "characters": character_found,
+            "general": general_tags,
         }
 
-        if rating:
-            ordered.append(rating)
-            breakdown["rating"] = rating
-
-        # Add special tags that exist in the current tags
-        SPECIAL_TAGS = {"original", "borrowed_character"}
-        special_tags = [tag for tag in tags if tag in SPECIAL_TAGS]
-        ordered.extend(special_tags)
-        breakdown["special"] = special_tags
-
-        # Add character tags
-        if character_tags:
-            ordered.extend(character_tags)
-            breakdown["characters"] = character_tags
-
-        # Add remaining general tags (everything that isn't special)
-        special_set = set(SPECIAL_TAGS)
-        general_tags = [tag for tag in tags if tag not in special_set]
-        ordered.extend(general_tags)
-        breakdown["general"] = general_tags
-
-        # Adjust if spaces
+        # If we want to display with spaces (for logging), convert if needed
         if self.use_spaces:
-            ordered = [tag.replace("_", " ") for tag in ordered]
-            # Also update breakdown for display
-            if character_tags:
-                breakdown["characters"] = [tag.replace("_", " ") for tag in character_tags]
-            # General tags already have spaces from the context
+            breakdown_display = {
+                "rating": rating_found.replace("_", " ") if rating_found else None,
+                "special": [t.replace("_", " ") for t in special_tags],
+                "characters": [t.replace("_", " ") for t in character_found],
+                "general": [t.replace("_", " ") for t in general_tags],
+            }
+        else:
+            breakdown_display = breakdown
 
-        return ordered, breakdown
+        # Return the original tags unchanged
+        return tags, breakdown_display
 
     def _log_breakdown(self, breakdown: dict[str, Any]) -> None:
         """Log the tag breakdown."""
@@ -128,6 +120,8 @@ class BaseFormatStep(PipelineStep):
         """Format tags with delimiter and spacing."""
         if not tags:
             return ""
+        if self.use_spaces:
+            tags = [t.replace("_", " ") for t in tags]
         return self.delimiter.join(tags)
 
     def _save_output(self, context: ImageContext, output: str) -> Path:

@@ -17,17 +17,10 @@ from caption_pipeline.utils.logging_utils import log, log_truncated, section
 
 Sections:
 - Section 0: Prepended tags (delimited by delimiter)
-- Section 1: Main tags (delimited by delimiter) - automatically includes:
-  - Rating (if present)
-  - Special tags (original, borrowed_character)
-  - Character tags (added back from context.character_tags)
-  - General tags (everything else)
+- Section 1: Main tags (delimited by delimiter) - all tags present in the section
 - Section 2: Natural language caption (raw text, delimiter ignored)
 
-The order for section 1 is: Rating → Special Tags → Character Tags → General Tags
-
-This is useful for extracting just the NL caption or just the tags for
-further processing or validation.""",
+The step does NOT reorder tags – that should be done by fix:order before this step.""",
     options=[
         {
             "flag": "--section INT",
@@ -90,12 +83,14 @@ class FormatSectionStep(BaseFormatStep):
     def process(self, context: ImageContext) -> ImageContext | None:
         """Output the specified section."""
         with section(f"Processing: {context.image_path.name}"):
-            # Build ordered tags and get breakdown
-            tags, breakdown = self._build_ordered_tags(context)
-
+            # Get tags and categorize for logging
+            tags = context.get_tags(self.section)
             if not tags:
                 log.debug(f"Section {self.section} is empty - skipping")
                 return context
+
+            # Use categorization for logging (does not reorder)
+            _, breakdown = self._categorize_tags(tags, context)
 
             # Format the output based on section
             if self.section == 2:
@@ -106,7 +101,7 @@ class FormatSectionStep(BaseFormatStep):
                     # Multiple NL entries - join with newlines
                     output = "\n".join(tags)
             else:
-                # Sections 0 and 1 are tags - delimited
+                # Sections 0 and 1 are tags - apply formatting (spaces, delimiter)
                 output = self._format_tags(tags)
 
             # Log breakdown

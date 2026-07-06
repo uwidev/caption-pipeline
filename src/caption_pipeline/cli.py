@@ -25,7 +25,7 @@ from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguag
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.utils import load_tag_databases
-from caption_pipeline.utils.logging_utils import configure_logging, log, section
+from caption_pipeline.utils.logging_utils import configure_logging, log, section, log_truncated
 
 # Image MIME types supported
 SUPPORTED_IMAGE_MIMES: set[str] = {
@@ -210,6 +210,7 @@ def load_existing_caption(image_path: Path) -> list[list[str]]:
     if not content:
         return [[], [], []]
 
+
 def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[str]]]:
     """
     Load existing caption file.
@@ -254,8 +255,8 @@ def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[
 
         # If first part is empty, we had leading "|||"
         if parts and parts[0] == "":
-            parts = parts[1:]          # remove the empty first
-            parts = [""] + parts       # re‑insert empty section 0
+            parts = parts[1:]  # remove the empty first
+            parts = [""] + parts  # re‑insert empty section 0
 
         # Ensure exactly 3 sections
         while len(parts) < 3:
@@ -1033,62 +1034,44 @@ Use --help-steps to see detailed step reference.
                         log.info("--- Raw sections ---")
                         if raw_sections[0]:
                             tags_str = ", ".join(raw_sections[0])
-                            log_truncated(f"Raw Section 0 ({len(raw_sections[0])})", tags_str, max_len=64)
+                            log_truncated(
+                                f"Raw Section 0 ({len(raw_sections[0])})", tags_str, max_len=64
+                            )
                         else:
                             log.info("Raw Section 0: (none)")
 
                         if raw_sections[1]:
                             tags_str = ", ".join(raw_sections[1])
-                            log_truncated(f"Raw Section 1 ({len(raw_sections[1])})", tags_str, max_len=64)
+                            log_truncated(
+                                f"Raw Section 1 ({len(raw_sections[1])})", tags_str, max_len=64
+                            )
                         else:
                             log.info("Raw Section 1: (none)")
 
                         if raw_sections[2] and raw_sections[2][0]:
-                            caption_preview = raw_sections[2][0][:100] + "..." if len(raw_sections[2][0]) > 100 else raw_sections[2][0]
+                            caption_preview = (
+                                raw_sections[2][0][:100] + "..."
+                                if len(raw_sections[2][0]) > 100
+                                else raw_sections[2][0]
+                            )
                             log.info(f"Raw Section 2 (NL): {caption_preview}")
                         else:
                             log.info("Raw Section 2: (none)")
 
-                        # --- Use processed sections for all downstream logic ---
+                        # ------------------------------------------------------------
+                        # Process sections without removing characters/rating
+                        # ------------------------------------------------------------
                         tags = processed_sections  # list of 3 lists: tags[0], tags[1], tags[2]
 
-                        # --- Log processed sections ---
-                        log.info("--- Processed sections ---")
-                        if tags[0]:
-                            tags_str = ", ".join(tags[0])
-                            log_truncated(f"Processed Section 0 ({len(tags[0])})", tags_str, max_len=64)
-                        else:
-                            log.info("Processed Section 0: (none)")
+                        # Extract character tags from sections 0 and 1 (without modifying the lists)
+                        _, chars0 = extract_character_hints(tags[0] if len(tags) > 0 else [])
+                        _, chars1 = extract_character_hints(tags[1] if len(tags) > 1 else [])
+                        character_tags = list(set(chars0 + chars1))
 
-                        if tags[1]:
-                            tags_str = ", ".join(tags[1])
-                            log_truncated(f"Processed Section 1 ({len(tags[1])})", tags_str, max_len=64)
-                        else:
-                            log.info("Processed Section 1: (none)")
-
-                        if tags[2] and tags[2][0]:
-                            caption_preview = tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
-                            log.info(f"Processed Section 2 (NL): {caption_preview}")
-                        else:
-                            log.info("Processed Section 2: (none)")
-
-                        # Process section 0
-                        section_0_remaining, section_0_characters = extract_character_hints(
-                            tags[0] if len(tags) > 0 else []
-                        )
-                        section_0_remaining_no_rating, section_0_rating = extract_rating(section_0_remaining)
-
-                        # Process section 1
-                        section_1_remaining, section_1_characters = extract_character_hints(
-                            tags[1] if len(tags) > 1 else []
-                        )
-                        section_1_remaining_no_rating, section_1_rating = extract_rating(section_1_remaining)
-
-                        # Combine character tags from both sections
-                        character_tags = list(set(section_0_characters + section_1_characters))
-
-                        # Rating: prefer section 0, otherwise section 1
-                        rating = section_0_rating if section_0_rating else section_1_rating
+                        # Extract rating from sections 0 and 1 (prefer section 0)
+                        _, rating0 = extract_rating(tags[0] if len(tags) > 0 else [])
+                        _, rating1 = extract_rating(tags[1] if len(tags) > 1 else [])
+                        rating = rating0 if rating0 else rating1
 
                         # Log extracted rating and characters
                         if rating:
@@ -1103,19 +1086,12 @@ Use --help-steps to see detailed step reference.
                         else:
                             log.info("Characters: (none)")
 
-                        # Build modified tags: sections stay separate
-                        modified_tags = [
-                            section_0_remaining_no_rating,          # section 0 cleaned
-                            section_1_remaining_no_rating,          # section 1 cleaned
-                            tags[2] if len(tags) > 2 else [],       # NL unchanged
-                        ]
-
-                        # Create context
+                        # Create context with the full tag lists (no removal)
                         context = ImageContext(
                             image_path=file_path,
                             source_path=file_path,
-                            tags=modified_tags,
-                            original_tags=tags,                     # processed sections (for reference)
+                            tags=tags,  # full processed sections
+                            original_tags=raw_sections,  # original raw sections
                             character_tags=character_tags,
                             rating=rating,
                         )
