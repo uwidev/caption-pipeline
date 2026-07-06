@@ -145,6 +145,7 @@ def log_truncated(
     """
     if level == continuation_level:
         getattr(logger.opt(depth=1), level)(f"{message}: {content}")
+        return
 
     clen = len(content)
     preview = content[:max_len]

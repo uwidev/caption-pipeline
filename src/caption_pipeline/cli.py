@@ -1,4 +1,4 @@
-F"""
+"""
 Command-line interface for the caption pipeline.
 """
 
@@ -8,15 +8,14 @@ import shlex
 import sys
 from pathlib import Path
 
-from loguru import logger
-
 from caption_pipeline.core import PipelineStep, format_step_help, get_step_help
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.pipeline import Pipeline
 from caption_pipeline.steps.debug import DebugStep
-from caption_pipeline.steps.fix_danbooru import FixDanbooruStep
-from caption_pipeline.steps.fix_overlap import FixOverlapStep
 from caption_pipeline.steps.fix_counts import FixCountsStep
+from caption_pipeline.steps.fix_danbooru import FixDanbooruStep
+from caption_pipeline.steps.fix_order import FixOrderStep
+from caption_pipeline.steps.fix_overlap import FixOverlapStep
 from caption_pipeline.steps.format_join import FormatJoinStep
 from caption_pipeline.steps.format_section import FormatSectionStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
@@ -26,7 +25,7 @@ from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguag
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.utils import load_tag_databases
-from caption_pipeline.utils.logging_utils import configure_logging, log, log_truncated, section
+from caption_pipeline.utils.logging_utils import configure_logging, log, section
 
 # Image MIME types supported
 SUPPORTED_IMAGE_MIMES: set[str] = {
@@ -382,6 +381,7 @@ def get_all_step_classes() -> list[type]:
         TagNaturalLanguageStep,
         TagNaturalLanguageFilterStep,
         FormatJoinStep,
+        FormatNewlineStep,
         FormatSectionStep,
         CharacterValidationStep,
         FixOverlapStep,
@@ -803,6 +803,55 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                     )
                 )
 
+            case "fix:order":
+                section = 1
+                mode = "category"
+                model = "huihui_ai/phi4-abliterated:14b"
+                ollama_url = "http://localhost:11434/api/chat"
+                temperature = 0.3
+                timeout = 120
+                batch_size = 20
+
+                i = 1
+                while i < len(parts):
+                    match parts[i]:
+                        case "--section":
+                            section = int(parts[i + 1])
+                            i += 2
+                        case "--mode":
+                            mode = parts[i + 1]
+                            if mode not in ("category", "rating_character"):
+                                raise ValueError(f"Invalid mode: {mode}")
+                            i += 2
+                        case "--model":
+                            model = parts[i + 1]
+                            i += 2
+                        case "--url":
+                            ollama_url = parts[i + 1]
+                            i += 2
+                        case "--temperature":
+                            temperature = float(parts[i + 1])
+                            i += 2
+                        case "--timeout":
+                            timeout = int(parts[i + 1])
+                            i += 2
+                        case "--batch-size":
+                            batch_size = int(parts[i + 1])
+                            i += 2
+                        case _:
+                            raise ValueError(f"Unknown flag '{parts[i]}' for step '{step_name}'")
+                steps.append(
+                    FixOrderStep(
+                        section=section,
+                        order_mode=mode,
+                        model=model,
+                        ollama_url=ollama_url,
+                        temperature=temperature,
+                        timeout=timeout,
+                        batch_size=batch_size,
+                    )
+                )
+
             case "format:section" | "format:s":
                 target_section = 1
                 output_dir = Path("./done/")
@@ -823,7 +872,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             suffix = parts[i + 1]
                             i += 2
                         case "--delimiter":
-                            delimiter = parts[i+1]
+                            delimiter = parts[i + 1]
                             i += 2
                         case "--no-spaces":
                             use_spaces = False
@@ -1048,7 +1097,9 @@ Use --help-steps to see detailed step reference.
                             log.info("Extracted rating: (none)")
 
                         if character_tags:
-                            log.info(f"Characters ({len(character_tags)}): {', '.join(character_tags)}")
+                            log.info(
+                                f"Characters ({len(character_tags)}): {', '.join(character_tags)}"
+                            )
                         else:
                             log.info("Characters: (none)")
 

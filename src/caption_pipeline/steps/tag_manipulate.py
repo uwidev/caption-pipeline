@@ -115,6 +115,7 @@ class TagManipulateStep(PipelineStep):
             result.set_tags(new_tags, section=self.section)
 
             log.debug(f"Applied {self.operation}: {len(current_tags)} -> {len(new_tags)} tags")
+            log.debug(new_tags)
             return result
 
     def _prepend_operation(self, current_tags: list[str]) -> list[str]:

@@ -12,6 +12,7 @@ All character tags are normalized to lowercase with underscores.
 
 import ast
 import csv
+import html
 import json
 import re
 from pathlib import Path
@@ -36,7 +37,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
 
     general_tags: set[str] = set()
     character_tags: set[str] = set()
-    
+
     # Track counts per source for logging
     source_counts: dict[str, dict[str, int]] = {}
 
@@ -46,8 +47,8 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     pixai_path = Path("./tags_v0.9_13k.json")
     if pixai_path.exists():
         try:
-            with pixai_path.open("r") as f:
-                data = json.load(f)
+            with pixai_path.open("r") as fp_tags:
+                data = json.load(fp_tags)
                 if "tag_map" in data and "tag_split" in data:
                     tag_split = data["tag_split"].get("gen_tag_count", 0)
                     tag_list = list(data["tag_map"].keys())
@@ -84,8 +85,8 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     wd_character: set[str] = set()
     if wd_path.exists():
         try:
-            with wd_path.open("r") as f:
-                reader = csv.DictReader(f)
+            with wd_path.open("r") as fp_tags:
+                reader = csv.DictReader(fp_tags)
                 for row in reader:
                     name = row.get("name", "").strip()
                     category = row.get("category", "").strip()
@@ -96,7 +97,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     elif category == "4":  # character
                         wd_character.add(name)
                     # category 9 = rating (ignored for tags)
-            
+
             general_tags.update(wd_general)
             character_tags.update(wd_character)
             source_counts["selected_tags.csv"] = {
@@ -118,13 +119,13 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     char_ip_series: set[str] = set()
     if char_ip_path.exists():
         try:
-            with char_ip_path.open("r") as f:
-                data = json.load(f)
+            with char_ip_path.open("r") as fp_tags:
+                data = json.load(fp_tags)
                 for key, value in data.items():
                     # Key is the character name
                     if key:
                         char_ip_characters.add(key)
-                    
+
                     # Value is the IP/series name
                     if value:
                         # If value is a list of series, add each one
@@ -135,7 +136,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                         elif isinstance(value, str):
                             # If it's a single string, add it directly
                             char_ip_series.add(value)
-            
+
             character_tags.update(char_ip_characters)
             general_tags.update(char_ip_series)
             source_counts["char_ip_map.json"] = {
@@ -156,8 +157,8 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     booru_tags: set[str] = set()
     if booru_path.exists():
         try:
-            with booru_path.open("r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
+            with booru_path.open("r", encoding="utf-8") as fp_tags:
+                reader = csv.DictReader(fp_tags)
                 for row in reader:
                     # Main tag
                     tag = row.get("tag", "").strip()
@@ -176,10 +177,10 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     skins = row.get("skins", "").strip()
                     if skins:
                         for skin in skins.split(","):
-                            skin = skin.strip()
+                            skin = skin.strip("[]").strip("'")
                             if skin:
                                 booru_tags.add(skin)
-            
+
             character_tags.update(booru_tags)
             source_counts["booru_characters.csv"] = {
                 "general": 0,
@@ -201,9 +202,9 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     tags_series: set[str] = set()
     if tags_path.exists():
         try:
-            with tags_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                
+            with tags_path.open("r", encoding="utf-8") as fp_tags:
+                data = json.load(fp_tags)
+
                 # Handle both array and object formats
                 if isinstance(data, list):
                     items = data
@@ -211,19 +212,19 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     items = data["tags"]
                 else:
                     items = data.values() if isinstance(data, dict) else []
-                
+
                 for entry in items:
                     if isinstance(entry, dict):
                         name = entry.get("name", "").strip()
                         category = entry.get("category", -1)
-                        
+
                         if not name:
                             continue
-                        
+
                         # Skip deprecated tags
                         if entry.get("is_deprecated", False):
                             continue
-                        
+
                         # Category 4 = character
                         if category == 4:
                             tags_character.add(name)
@@ -234,7 +235,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                         elif category == 3:
                             tags_series.add(name)
                         # Category 1 (artist) and 5 (meta) are ignored
-            
+
             general_tags.update(tags_general)
             general_tags.update(tags_series)
             character_tags.update(tags_character)
@@ -258,20 +259,20 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     danbooru_series: set[str] = set()
     if danbooru_path.exists():
         try:
-            with danbooru_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
+            with danbooru_path.open("r", encoding="utf-8") as fp_tags:
+                data = json.load(fp_tags)
                 tags_list = data.get("tags", [])
-                
+
                 for entry in tags_list:
                     if not isinstance(entry, dict):
                         continue
-                    
+
                     tag_name = entry.get("n", "").strip()
                     category = entry.get("c", -1)
-                    
+
                     if not tag_name:
                         continue
-                    
+
                     # Category 4 = character
                     if category == 4:
                         danbooru_character.add(tag_name)
@@ -282,7 +283,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     elif category == 3:
                         danbooru_series.add(tag_name)
                     # Category 1 (artist) and 5 (meta) are ignored
-            
+
             general_tags.update(danbooru_general)
             general_tags.update(danbooru_series)
             character_tags.update(danbooru_character)
@@ -301,40 +302,46 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     # Source 7: gelbooru_tags_*.jsonl (OPTIONAL)
     # ============================================================
     import glob
+
     gelbooru_files = glob.glob("./gelbooru_tags_*.jsonl")
     gelbooru_general: set[str] = set()
     gelbooru_character: set[str] = set()
     gelbooru_series: set[str] = set()
-    
+
     if gelbooru_files:
         # Sort by filename to ensure consistent order
         gelbooru_files.sort()
         latest_file = Path(gelbooru_files[-1])
-        
+
         try:
-            with latest_file.open("r", encoding="utf-8") as f:
-                for line_num, line in enumerate(f, 1):
+            with latest_file.open("r", encoding="utf-8") as fp_tags:
+                for line_num, line in enumerate(fp_tags, 1):
                     line = line.strip()
                     if not line:
                         continue
-                    
+
                     try:
                         entry = json.loads(line)
                     except json.JSONDecodeError as e:
                         log.warning(f"Failed to parse line {line_num} in {latest_file.name}: {e}")
                         continue
-                    
-                    tag_name = entry.get("tag_name", "").strip()
+
+                    # Ignore tags with low post counts, may be a bad tag
+                    post_count = entry.get("post_count")
+                    if post_count < 10:
+                        continue
+
+                    tag_name = html.unescape(entry.get("tag_name", "").strip())
                     category_id = entry.get("category_id", -1)
                     is_ambiguous = entry.get("is_ambiguous", False)
-                    
+
                     if not tag_name:
                         continue
-                    
+
                     # Skip ambiguous tags
                     if is_ambiguous:
                         continue
-                    
+
                     # Category 4 = character
                     if category_id == 4:
                         gelbooru_character.add(tag_name)
@@ -345,7 +352,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
                     elif category_id == 3:
                         gelbooru_series.add(tag_name)
                     # Category 1 (artist) is ignored
-            
+
             general_tags.update(gelbooru_general)
             general_tags.update(gelbooru_series)
             character_tags.update(gelbooru_character)
@@ -360,6 +367,18 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     else:
         log.warning("No gelbooru_tags_*.jsonl files found")
 
+    # Write tags to local database for use elsewhere
+    with Path("tags.txt").open('w') as fp_tags:
+        with Path("general_tags.txt").open('w') as fp_general:
+            payload = sorted([tag.replace("_", " ") + '\n' for tag in general_tags if tag])
+            fp_general.writelines(payload)
+            fp_tags.writelines(payload)
+
+        with Path("character_list.txt").open('w') as fp_general:
+            payload = sorted([tag.replace("_", " ") + '\n' for tag in character_tags if tag])
+            fp_general.writelines(payload)
+            fp_tags.writelines(payload)
+
     # Convert to lists and normalize (lowercase with underscores)
     general_list = sorted([tag.lower().replace(" ", "_") for tag in general_tags if tag])
     character_list = sorted([tag.lower().replace(" ", "_") for tag in character_tags if tag])
@@ -370,16 +389,16 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     total_combined = total_general + total_character
 
     # Log detailed source breakdown
-    log.info(f"Loaded tag databases:")
-    log.info(f"  Source breakdown:")
-    
+    log.info("Loaded tag databases:")
+    log.info("  Source breakdown:")
+
     # Find max source name length for alignment
     max_name_len = max(len(name) for name in source_counts.keys()) if source_counts else 0
     max_name_len = max(max_name_len, len("TOTAL"))
-    
+
     # Track total series across all sources (for display)
     total_series = sum(counts.get("series", 0) for counts in source_counts.values())
-    
+
     for source_name, counts in source_counts.items():
         log.info(
             f"    {source_name:<{max_name_len}} : "
@@ -388,7 +407,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
             f"{counts['character']:>6} character, "
             f"{counts['total']:>6} total"
         )
-    
+
     # Log source totals
     log.info(
         f"    {'SOURCE TOTALS':-<{max_name_len}} : "
@@ -397,7 +416,7 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
         f"{total_character:>6} character, "
         f"{total_general + total_series + total_character:>6} total"
     )
-    
+
     # Log combined totals (series merged into general)
     log.info(
         f"    {'COMBINED':-<{max_name_len}} : "
