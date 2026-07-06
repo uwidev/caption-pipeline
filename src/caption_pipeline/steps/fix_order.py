@@ -12,8 +12,7 @@ This step updates the context with the reordered tags. It may trigger LLM calls
 for tags not yet present in the tag cache.
 """
 
-# src/caption_pipeline/steps/fix_order.py
-
+import re
 from typing import Literal
 
 from caption_pipeline.core.context import ImageContext
@@ -38,6 +37,27 @@ CATEGORY_ORDER = [
     "uncertain",
 ]
 
+RATING_TAGS = {"general", "sensitive", "questionable", "explicit", "safe", "suggestive", "nsfw"}
+
+# Patterns for count tags
+COUNT_PATTERNS = [
+    r"^(\d+)boys?$",      # 1boy, 2boys, 3boys
+    r"^(\d+)girls?$",     # 1girl, 2girls, 3girls
+    r"^(\d+)others?$",    # 1other, 2others
+]
+
+
+def is_count_tag(tag: str) -> bool:
+    """Check if a tag is a count tag (e.g., 1girl, 2boys, solo)."""
+    tag_lower = tag.lower().strip()
+    if tag_lower == "solo":
+        return True
+    for pattern in COUNT_PATTERNS:
+        if re.match(pattern, tag_lower):
+            return True
+    return False
+
+
 @step_help(
     name="fix:order",
     description="Reorder tags in a specific section according to a mode.",
@@ -48,9 +68,13 @@ Modes:
   category and sorted alphabetically within each group. This is useful for consistent
   ordering across training examples. Unseen tags are classified via the LLM and
   added to the cache.
-- rating_character: Reorder as: rating tag (if any), then character tags, then
-  everything else (preserving original order). This matches the ordering used by
-  format:join.
+
+  Rating and character tags are automatically identified and pre‑categorized before
+  the LLM call, so they are never sent to the LLM.
+
+- rating_character: Reorder as: rating tag (if any), then count tags, then character tags,
+  then everything else (preserving original order for the rest). This matches the
+  ordering used by format:join.
 
 The step uses the persistent tag cache. If a tag is not yet in the cache, it will
 be classified on the fly via the LLM (Ollama).""",
@@ -121,7 +145,7 @@ class FixOrderStep(PipelineStep):
             log.debug(f"[BEFORE] Original tags: {tags}")
 
             if self.order_mode == "category":
-                ordered = self._order_by_category(tags)
+                ordered = self._order_by_category(tags, context)
             elif self.order_mode == "rating_character":
                 ordered = self._order_rating_character(tags, context)
             else:
@@ -132,31 +156,70 @@ class FixOrderStep(PipelineStep):
             log.info(f"Reordered {len(tags)} tags in section {self.section} using mode '{self.order_mode}'")
             return result
 
-    def _order_by_category(self, tags: list[str]) -> list[str]:
-        """Order tags by semantic category (using cache)."""
+    def _order_by_category(self, tags: list[str], context: ImageContext) -> list[str]:
+        """
+        Order tags by semantic category using the tag cache.
+
+        Rating and character tags are automatically pre‑categorized and excluded from
+        the LLM call.
+        """
         log.debug(f"[CLASSIFY] Starting classification for {len(tags)} tags")
+
+        # Separate rating tags and character tags
+        rating_tags = [t for t in tags if t.lower() in RATING_TAGS]
+        character_tags_from_context = context.get_character_tags()
+        # Also consider "original" and "borrowed_character" as special (we can treat as character)
+        SPECIAL_CHARACTER = {"original", "borrowed_character"}
+        special_tags = [t for t in tags if t.lower() in SPECIAL_CHARACTER]
+
+        # Combine all tags that we want to pre‑categorize
+        pre_categorized = set(rating_tags) | set(character_tags_from_context) | set(special_tags)
+
+        # Tags that need LLM classification
+        tags_to_classify = [t for t in tags if t not in pre_categorized]
+
+        # Initialize cache
         cache = TagCategoryCache()
-        try:
-            classified = cache.classify_tags_batch(
-                tags,
-                ollama_url=self.ollama_url,
-                model=self.model,
-                temperature=self.temperature,
-                timeout=self.timeout,
-                batch_size=self.batch_size,
-            )
-        except Exception as e:
-            log.error(f"Classification failed: {e}")
+
+        # Manually set rating tags
+        for tag in rating_tags:
+            cache.set(tag, "rating")
+
+        # Manually set character tags (including special ones)
+        for tag in character_tags_from_context:
+            cache.set(tag, "character name or series")
+        for tag in special_tags:
+            cache.set(tag, "character name or series")  # treat as character
+
+        # Classify remaining tags via LLM
+        if tags_to_classify:
+            log.debug(f"[CLASSIFY] {len(tags_to_classify)} tags need LLM classification")
+            try:
+                classified = cache.classify_tags_batch(
+                    tags_to_classify,
+                    ollama_url=self.ollama_url,
+                    model=self.model,
+                    temperature=self.temperature,
+                    timeout=self.timeout,
+                    batch_size=self.batch_size,
+                )
+            except Exception as e:
+                log.error(f"Classification failed: {e}")
+                classified = {}
+        else:
             classified = {}
 
-        # Build mapping: use classified result if available, otherwise query the cache directly
+        # Build final category mapping for all tags
         tag_cat = {}
         for tag in tags:
-            if tag in classified:
+            # Use cache if available, else fallback to uncertain
+            cached_cat = cache.get(tag)
+            if cached_cat is not None:
+                tag_cat[tag] = cached_cat
+            elif tag in classified:
                 tag_cat[tag] = classified[tag]
             else:
-                cached_cat = cache.get(tag)  # directly check cache
-                tag_cat[tag] = cached_cat if cached_cat is not None else "uncertain"
+                tag_cat[tag] = "uncertain"
 
         log.debug(f"[CLASSIFY] Tag -> category mapping: {tag_cat}")
 
@@ -169,15 +232,29 @@ class FixOrderStep(PipelineStep):
         return ordered
 
     def _order_rating_character(self, tags: list[str], context: ImageContext) -> list[str]:
-        """Order as: rating → characters → everything else."""
+        """
+        Order as: rating → count tags → character tags → everything else.
+        """
         rating = context.rating
-        chars = context.character_tags
-        # The rest: tags that are not in chars and not the rating (if rating exists)
-        rest = [t for t in tags if t not in chars and (rating is None or t != rating)]
+        chars = context.get_character_tags()
+
+        # Separate count tags
+        count_tags = [t for t in tags if is_count_tag(t)]
+
+        # The rest: tags that are not in chars, not rating, not count
+        rest = [
+            t for t in tags
+            if t not in chars
+            and (rating is None or t != rating)
+            and not is_count_tag(t)
+        ]
+
         ordered = []
         if rating:
             ordered.append(rating)
+        ordered.extend(count_tags)   # count tags come after rating, before characters
         ordered.extend(chars)
         ordered.extend(rest)
+
         log.debug(f"[RATING_CHAR] Ordered: {ordered}")
         return ordered
