@@ -7,7 +7,7 @@ warnings/errors to help maintain a clean database.
 
 from pathlib import Path
 
-from caption_pipeline.tools.tag_utils import sort_tags_by_object
+from caption_pipeline.utils.tag_utils import sort_tags_by_object
 from caption_pipeline.utils.logging_utils import log
 
 # Known valid categories (from tag_patterns.py and tag_categories.txt)

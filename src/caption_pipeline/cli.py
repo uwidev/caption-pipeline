@@ -26,7 +26,6 @@ from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.tools import merge_tag_categories, validate_tag_categories
-from caption_pipeline.utils import load_tag_databases
 from caption_pipeline.utils.logging_utils import configure_logging, log, section
 
 # Image MIME types supported
@@ -46,15 +45,6 @@ SUPPORTED_IMAGE_MIMES: set[str] = {
 _CHARACTER_TAGS: set[str] | None = None
 
 RATING_TAGS = {"safe", "questionable", "explicit", "general", "sensitive"}
-
-
-def get_character_tags() -> set[str]:
-    """Get the set of character tags from the database (cached)."""
-    global _CHARACTER_TAGS
-    if _CHARACTER_TAGS is None:
-        _, characters = load_tag_databases()
-        _CHARACTER_TAGS = set(characters)
-    return _CHARACTER_TAGS
 
 
 def normalize_character_tag(tag: str) -> str:

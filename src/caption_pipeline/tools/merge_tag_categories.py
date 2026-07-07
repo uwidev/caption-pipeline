@@ -7,7 +7,7 @@ This tool merges two tag categories files with intelligent conflict resolution.
 import shutil
 from pathlib import Path
 
-from caption_pipeline.tools.tag_utils import sort_tags_by_object
+from caption_pipeline.utils.tag_utils import sort_tags_by_object
 from caption_pipeline.utils.logging_utils import log
 
 

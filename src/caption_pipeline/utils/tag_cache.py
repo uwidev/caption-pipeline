@@ -23,7 +23,7 @@ from pathlib import Path
 import requests
 
 from caption_pipeline.prompts.categorize_tag import CATEGORIZE_TAG_SYSTEM_PROMPT
-from caption_pipeline.tools.tag_utils import sort_tags_by_object
+from caption_pipeline.utils.tag_utils import sort_tags_by_object
 from caption_pipeline.utils.logging_utils import log
 
 CATEGORY_ORDER = [

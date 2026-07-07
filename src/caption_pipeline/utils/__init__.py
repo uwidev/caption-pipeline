@@ -2,52 +2,52 @@
 Utility functions and helpers for the caption pipeline.
 """
 
+from caption_pipeline.utils.llama_server import LlamaServer, LlamaServerConfig
+
+# ModelManager removed (unused)
+from caption_pipeline.utils.logging_utils import (
+    configure_logging,
+    # Core logging
+    log,
+    log_list_truncated,
+    log_scored_list_truncated,
+    # Truncation helpers
+    log_truncated,
+    # Context management
+    section,
+)
+from caption_pipeline.utils.ollama_manager import (
+    OllamaConfig,
+    OllamaManager,
+)
 from caption_pipeline.utils.tag_db import (
-    # Database loading
-    load_tag_databases,
-    load_character_tags_only,
-    load_general_tags_only,
-    load_character_data,
-    # Character queries
-    query_character,
-    query_character_field,
-    get_character_popular_tags,
+    get_all_characters,
     get_character_description,
+    get_character_info,
+    get_character_names,
+    get_character_popular_tags,
     get_display_name,
     get_parent_tag,
     is_alias,
     is_skin,
-    get_character_info,
+    load_character_data,
+    load_character_tags_only,
+    load_general_tags_only,
+    # Database loading
+    load_tag_databases,
+    # Character queries
+    query_character,
+    query_character_field,
     search_characters,
-    get_all_characters,
-    get_character_names,
-)
-from caption_pipeline.utils.tokenizer import get_tokenizer
-from caption_pipeline.utils.ollama_manager import (
-    OllamaManager,
-    OllamaConfig,
-)
-from caption_pipeline.utils.llama_server import (
-    LlamaServer,
-    LlamaServerConfig
-)
-from caption_pipeline.utils.model_manager import (
-    ModelManager
-)
-from caption_pipeline.utils.logging_utils import (
-    # Core logging
-    log,
-    configure_logging,
-    # Context management
-    section,
-    # Truncation helpers
-    log_truncated,
-    log_list_truncated,
-    log_scored_list_truncated,
 )
 from caption_pipeline.utils.tag_patterns import (
     PRE_CATEGORIZE_PATTERNS,
 )
+from caption_pipeline.utils.tag_utils import (
+    sort_key_by_object,
+    sort_tags_by_object,
+)
+from caption_pipeline.utils.tokenizer import get_tokenizer
 
 __all__ = [
     # tag_db
@@ -74,7 +74,6 @@ __all__ = [
     "OllamaConfig",
     "LlamaServer",
     "LlamaServerConfig",
-    "ModelManager",
     # Logging
     "log",
     "configure_logging",
@@ -84,4 +83,7 @@ __all__ = [
     "log_scored_list_truncated",
     # Tag patterns
     "PRE_CATEGORIZE_PATTERNS",
+    # Tag utils
+    "sort_key_by_object",
+    "sort_tags_by_object",
 ]
