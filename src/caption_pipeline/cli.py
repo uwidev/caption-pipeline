@@ -4,6 +4,7 @@ Command-line interface for the caption pipeline.
 
 import argparse
 import mimetypes
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from caption_pipeline.core.pipeline import Pipeline
 from caption_pipeline.steps.debug import DebugStep
 from caption_pipeline.steps.fix_counts import FixCountsStep
 from caption_pipeline.steps.fix_danbooru import FixDanbooruStep
+from caption_pipeline.steps.fix_natural_language import FixNaturalLanguageStep
 from caption_pipeline.steps.fix_order import FixOrderStep
 from caption_pipeline.steps.fix_overlap import FixOverlapStep
 from caption_pipeline.steps.format_join import FormatJoinStep
@@ -21,7 +23,6 @@ from caption_pipeline.steps.format_section import FormatSectionStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
 from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
-from caption_pipeline.steps.fix_natural_language import FixNaturalLanguageStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.tools import merge_tag_categories, validate_tag_categories
@@ -192,6 +193,7 @@ def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[
         - raw_sections:   list of 3 sections, each section is a list of stripped tag strings
         - processed_sections: same structure, but tags are lowercased and spaces → underscores
         For section 2 (NL), both contain a list with a single string (the whole caption).
+        Empty NL captions are represented as empty lists [].
     """
     caption_path = image_path.with_suffix(".txt")
     if not caption_path.exists():
@@ -201,52 +203,46 @@ def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[
     if not content:
         return [[], [], []], [[], [], []]
 
-    # --- helper: split tags by comma and strip ---
     def split_tags(raw: str) -> list[str]:
         if not raw or raw.strip() == "":
             return []
         return [t.strip() for t in raw.split(",") if t.strip()]
 
-    # --- helper: normalize a single tag ---
     def normalize_tag(tag: str) -> str:
         return tag.lower().strip().replace(" ", "_")
+
+    # Split on "|||" with optional whitespace around it
+    # This handles trailing delimiters and inconsistent spacing
+    parts = re.split(r"\s*\|\|\|\s*", content)
+
+    # Remove any empty parts at the end (from trailing delimiters)
+    while parts and parts[-1] == "":
+        parts.pop()
+
+    # If we have more than 3 parts, join the extra parts back into section 2
+    # (NL caption may contain the delimiter)
+    if len(parts) > 3:
+        parts = parts[:2] + [" ||| ".join(parts[2:])]
+
+    # Ensure exactly 3 sections
+    while len(parts) < 3:
+        parts.append("")
 
     raw_sections = [[], [], []]
     processed_sections = [[], [], []]
 
-    # Handle leading "|||" (means section 0 is empty)
-    normalized_content = content
-    if normalized_content.startswith("|||"):
-        normalized_content = " " + normalized_content
-    elif normalized_content.startswith(" |||"):
-        pass  # already has leading space
-
-    if " ||| " in normalized_content:
-        parts = normalized_content.split(" ||| ")
-        parts = [p.strip() for p in parts]
-
-        # If first part is empty, we had leading "|||"
-        if parts and parts[0] == "":
-            parts = parts[1:]  # remove the empty first
-            parts = [""] + parts  # re‑insert empty section 0
-
-        # Ensure exactly 3 sections
-        while len(parts) < 3:
-            parts.append("")
-
-        for idx, section_text in enumerate(parts):
-            if idx == 2:  # NL section
+    for idx, section_text in enumerate(parts):
+        if idx == 2:  # NL section
+            if section_text.strip():
                 raw_sections[2] = [section_text]
-                processed_sections[2] = [section_text]  # no normalisation
+                processed_sections[2] = [section_text]  # no normalization
             else:
-                raw_tags = split_tags(section_text)
-                raw_sections[idx] = raw_tags
-                processed_sections[idx] = [normalize_tag(t) for t in raw_tags]
-    else:
-        # No delimiter: treat entire content as section 1 (main tags)
-        raw_tags = split_tags(content)
-        raw_sections[1] = raw_tags
-        processed_sections[1] = [normalize_tag(t) for t in raw_tags]
+                raw_sections[2] = []
+                processed_sections[2] = []
+        else:
+            raw_tags = split_tags(section_text)
+            raw_sections[idx] = raw_tags
+            processed_sections[idx] = [normalize_tag(t) for t in raw_tags]
 
     return raw_sections, processed_sections
 
@@ -932,7 +928,9 @@ Use --help-steps to see detailed step reference.
 
     # Tool commands
     tool_parser = subparsers.add_parser("tool", help="Utility commands for the pipeline")
-    tool_subparsers = tool_parser.add_subparsers(dest="tool_command", required=True, help="Tool command")
+    tool_subparsers = tool_parser.add_subparsers(
+        dest="tool_command", required=True, help="Tool command"
+    )
 
     # Merge tag categories
     merge_parser = tool_subparsers.add_parser(
@@ -956,32 +954,21 @@ Conflict resolution:
     merge_parser.add_argument(
         "--into",
         default="./tag_categories.txt",
-        help="Target file to merge into (default: ./tag_categories.txt)"
+        help="Target file to merge into (default: ./tag_categories.txt)",
     )
+    merge_parser.add_argument("--merge", required=True, help="Source file to merge from (required)")
     merge_parser.add_argument(
-        "--merge",
-        required=True,
-        help="Source file to merge from (required)"
-    )
-    merge_parser.add_argument(
-        "--output",
-        help="Output path for merged file (default: overwrites --into file)"
+        "--output", help="Output path for merged file (default: overwrites --into file)"
     )
     merge_parser.add_argument(
         "--trust",
         choices=["merge", "into"],
-        help="Which file to trust in case of proper category conflicts (if not specified, abort on conflicts)"
+        help="Which file to trust in case of proper category conflicts (if not specified, abort on conflicts)",
     )
     merge_parser.add_argument(
-        "--backup-suffix",
-        default=".bak",
-        help="Suffix for backup file (default: .bak)"
+        "--backup-suffix", default=".bak", help="Suffix for backup file (default: .bak)"
     )
-    merge_parser.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="Skip creating a backup"
-    )
+    merge_parser.add_argument("--no-backup", action="store_true", help="Skip creating a backup")
 
     # Validate tag categories
     validate_parser = tool_subparsers.add_parser(
@@ -1168,7 +1155,7 @@ Conflict resolution:
             output_path = Path(args.output) if args.output else None
             trust_source = None
             if args.trust == "merge":
-                trust_source = True   # trust the source file (--merge)
+                trust_source = True  # trust the source file (--merge)
             elif args.trust == "into":
                 trust_source = False  # trust the target file (--into)
             # trust_source = None means abort on proper conflicts

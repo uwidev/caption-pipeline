@@ -87,32 +87,44 @@ class FormatJoinStep(PipelineStep):
 
     def process(self, context: ImageContext) -> ImageContext | None:
         with section(f"Processing: {context.image_path.name}"):
+            # Prepare each section as a string (empty string if no content)
+            sections_str = ["", "", ""]
+
             # SECTION 0: Prepended tags
-            section0, breakdown0 = self._format_section(context.tags[0])
-            if breakdown0:
+            if context.tags[0]:
+                section0, breakdown0 = self._format_section(context.tags[0])
+                sections_str[0] = section0
                 log_list_truncated(breakdown0, "Prepended")
 
             # SECTION 1: Main tags
-            section1, breakdown1 = self._format_section(context.tags[1])
-            if breakdown1:
+            if context.tags[1]:
+                section1, breakdown1 = self._format_section(context.tags[1])
+                sections_str[1] = section1
                 log_list_truncated(breakdown1, "Main")
 
-            # SECTION 2: NL caption (no deduplication or spacing changes)
+            # SECTION 2: NL caption
             if context.tags[2]:
                 if len(context.tags[2]) == 1:
                     section2 = context.tags[2][0]
                 else:
                     section2 = "\n".join(context.tags[2])
+                sections_str[2] = section2
                 log_truncated("NL", section2, max_len=64, level="info", continuation_level="debug")
-            else:
-                section2 = ""
 
-            sections = [section0, section1, section2]
-            if not any(sections):
+            # Find the last non‑empty section index
+            last_non_empty = -1
+            for i in range(2, -1, -1):
+                if sections_str[i]:
+                    last_non_empty = i
+                    break
+
+            if last_non_empty == -1:
                 log.debug("All sections empty - skipping save")
                 return context
 
-            caption = self.delimiter.join(sections)
+            # Join sections from 0 to last_non_empty inclusive
+            caption = self.delimiter.join(sections_str[:last_non_empty + 1])
+
             self.output_dir.mkdir(parents=True, exist_ok=True)
             output_path = self.output_dir / f"{context.image_path.stem}{self.tag_suffix}.txt"
             output_path.write_text(caption)
