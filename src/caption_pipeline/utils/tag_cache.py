@@ -1,9 +1,24 @@
-# src/caption_pipeline/utils/tag_cache.py
+"""
+Tag category cache for tag ordering and classification.
 
+This module provides a persistent cache (`TagCategoryCache`) that maps tags
+to their semantic categories (e.g., "body parts", "wearables", "action").
+It is used by `FixOrderStep` to avoid repeated LLM calls for tag categorization.
+
+The cache is stored in `tag_categories.txt` as a simple text file with
+`[category]` headers and one tag per line. Tags are normalized to lowercase
+with spaces (underscores converted). The cache is a singleton that auto‑loads
+on first use and persists new categories via `save()`.
+
+Key features:
+- Lazy loading and automatic saving after classification.
+- Batch classification via LLM with fallback to individual requests.
+- Pre‑categorization using flexible regex patterns (see `tag_patterns.py`).
+- Object‑based sorting when writing the file for better readability.
+""" 
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import requests
 
@@ -47,7 +62,7 @@ CATEGORY_NAMES = list(CATEGORY_CODES.keys())
 
 
 class TagCategoryCache:
-    _instance: Optional["TagCategoryCache"] = None
+    _instance: "TagCategoryCache | None" = None
 
     def __new__(cls, cache_path: Path = Path("./tag_categories.txt")):
         if cls._instance is None:
@@ -59,7 +74,7 @@ class TagCategoryCache:
         if self._initialized:
             return
         self.cache_path: Path = cache_path
-        self.cache: Dict[str, str] = {}  # tag (spaces, lowercase) -> full category name
+        self.cache: dict[str, str] = {}  # tag (spaces, lowercase) -> full category name
         self._dirty: bool = False
         self._load()
         self._initialized = True
@@ -120,7 +135,7 @@ class TagCategoryCache:
         except Exception as e:
             log.error(f"Failed to save tag cache: {e}")
 
-    def get(self, tag: str) -> Optional[str]:
+    def get(self, tag: str) -> str | None:
         """Get category for a tag (normalized internally)."""
         norm = self._normalize_tag(tag)
         return self.cache.get(norm)
@@ -150,14 +165,14 @@ class TagCategoryCache:
 
     def classify_tags_batch(
         self,
-        tags: List[str],
+        tags: list[str],
         ollama_url: str = "http://localhost:11434/api/chat",
         model: str = "deepseek-r1:8b",
         temperature: float = 0.6,
         timeout: int = 120,
         batch_size: int = 20,
         max_retries: int = 3,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         self._ollama_url = ollama_url
         self._model = model
         self._temperature = temperature
@@ -175,7 +190,7 @@ class TagCategoryCache:
             return results
 
         # Track retry counts per normalized tag
-        retry_counts: Dict[str, int] = {nt: 0 for nt in uncached_norm}
+        retry_counts: dict[str, int] = {nt: 0 for nt in uncached_norm}
         pool = uncached_norm.copy()
         total_start = time.time()
 
@@ -244,12 +259,12 @@ class TagCategoryCache:
 
     def _call_llm_batch(
         self,
-        tags: List[str],
+        tags: list[str],
         ollama_url: str,
         model: str,
         temperature: float,
         timeout: int,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         tag_input = "\n".join(tags)
         messages = [
             {"role": "system", "content": CATEGORIZE_TAG_SYSTEM_PROMPT},
@@ -298,7 +313,7 @@ class TagCategoryCache:
 
         return {}
 
-    def _parse_response(self, content: str, input_tags: List[str]) -> Dict[str, str]:
+    def _parse_response(self, content: str, input_tags: list[str]) -> dict[str, str]:
         """
         Robustly parse the LLM response into tag -> category mappings.
         Handles various formatting: with/without delimiters, extra text, backticks.
