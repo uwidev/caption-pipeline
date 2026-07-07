@@ -1,4 +1,6 @@
-# src/caption_pipeline/prompts/categorize_tag.py
+"""
+System prompt for bucketing a tag into defined categories.
+"""
 
 from typing import Final
 
