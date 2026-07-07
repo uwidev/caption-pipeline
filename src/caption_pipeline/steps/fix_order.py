@@ -18,10 +18,10 @@ from typing import Literal
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.utils.logging_utils import log, section
+from caption_pipeline.utils.logging_utils import log, section, log_list_truncated
 from caption_pipeline.utils.tag_cache import TagCategoryCache
 from caption_pipeline.utils.tag_patterns import PRE_CATEGORIZE_PATTERNS
-from caption_pipeline.tools.tag_utils import sort_tags_by_object
+from caption_pipeline.tools.tag_utils import sort_tags_by_object, sort_key_by_object
 
 CATEGORY_ORDER = [
     "rating",
@@ -152,7 +152,8 @@ class FixOrderStep(PipelineStep):
                 log.debug("No tags to reorder")
                 return result
 
-            log.debug(f"[BEFORE] Original tags: {tags}")
+            log.debug(f"[BEFORE] Original tags ({len(tags)}):")
+            log_list_truncated(tags, "  Tags", max_items=10, level="debug")
 
             if self.order_mode == "category":
                 ordered = self._order_by_category(tags, context)
@@ -161,7 +162,9 @@ class FixOrderStep(PipelineStep):
             else:
                 raise ValueError(f"Unknown order_mode: {self.order_mode}")
 
-            log.debug(f"[AFTER] Ordered tags: {ordered}")
+            log.debug(f"[AFTER] Ordered tags ({len(ordered)}):")
+            log_list_truncated(ordered, "  Tags", max_items=10, level="debug")
+
             result.set_tags(ordered, section=self.section)
             log.info(f"Reordered {len(tags)} tags in section {self.section} using mode '{self.order_mode}'")
             return result
@@ -172,6 +175,7 @@ class FixOrderStep(PipelineStep):
 
         Rating, body/count tags (1girl, 2boys, etc.), character tags, and many
         common pattern-based tags are pre‑categorized and excluded from the LLM call.
+        Within each category, tags are sorted by object (last word) for readability.
         """
         log.debug(f"[CLASSIFY] Starting classification for {len(tags)} tags")
 
@@ -198,20 +202,24 @@ class FixOrderStep(PipelineStep):
                     pattern_categories[tag] = category
                     break
 
-        # Log pre-categorization breakdown
-        log.debug(f"[CLASSIFY] Pre-categorization breakdown:")
+        # Log pre-categorization breakdown with truncation
+        log.debug("[CLASSIFY] Pre-categorization breakdown:")
         log.debug(f"  Rating tags: {len(rating_tags)}")
         if rating_tags:
-            log.debug(f"    {rating_tags}")
+            log_list_truncated(rating_tags, "    Rating tags", max_items=5, level="debug")
+
         log.debug(f"  Body/count tags: {len(body_tags)}")
         if body_tags:
-            log.debug(f"    {body_tags}")
+            log_list_truncated(body_tags, "    Body/count tags", max_items=5, level="debug")
+
         log.debug(f"  Character tags (from context): {len(character_tags_from_context)}")
         if character_tags_from_context:
-            log.debug(f"    {character_tags_from_context}")
+            log_list_truncated(character_tags_from_context, "    Character tags", max_items=5, level="debug")
+
         log.debug(f"  Special tags: {len(special_tags)}")
         if special_tags:
-            log.debug(f"    {special_tags}")
+            log_list_truncated(special_tags, "    Special tags", max_items=5, level="debug")
+
         log.debug(f"  Pattern-categorized tags: {len(pattern_categories)}")
         if pattern_categories:
             # Group by category for better readability
@@ -219,7 +227,7 @@ class FixOrderStep(PipelineStep):
             for tag, cat in pattern_categories.items():
                 by_cat.setdefault(cat, []).append(tag)
             for cat, tag_list in by_cat.items():
-                log.debug(f"    {cat}: {tag_list}")
+                log_list_truncated(tag_list, f"    {cat}", max_items=3, level="debug")
 
         # Combine all tags that we want to pre‑categorize
         pre_categorized = (
@@ -234,7 +242,7 @@ class FixOrderStep(PipelineStep):
         tags_to_classify = [t for t in tags if t not in pre_categorized]
         log.debug(f"[CLASSIFY] Tags to classify via LLM: {len(tags_to_classify)}")
         if tags_to_classify:
-            log.debug(f"  {tags_to_classify}")
+            log_list_truncated(tags_to_classify, "  Tags to classify", max_items=5, level="debug")
 
         # Initialize cache
         cache = TagCategoryCache()
@@ -286,14 +294,22 @@ class FixOrderStep(PipelineStep):
             else:
                 tag_cat[tag] = "uncertain"
 
-        log.debug(f"[CLASSIFY] Tag -> category mapping: {tag_cat}")
+        # Log final mapping (truncated)
+        log.debug("[CLASSIFY] Tag -> category mapping:")
+        # Only show up to 10 entries, with more at continuation level
+        for i, (tag, cat) in enumerate(sorted(tag_cat.items())):
+            if i < 10:
+                log.debug(f"    {tag} -> {cat}")
+            elif i == 10:
+                log.debug(f"    ... and {len(tag_cat) - 10} more")
+                break
 
-        # Sort by category order, then alphabetically within each category
+        # Sort by category order, then by object (last word) within each category
         ordered = sorted(
             tags,
-            key=lambda t: (CATEGORY_ORDER.index(tag_cat.get(t, "uncertain")), t)
+            key=lambda t: (CATEGORY_ORDER.index(tag_cat.get(t, "uncertain")), sort_key_by_object(t))
         )
-        log.debug(f"[CLASSIFY] Sorted order: {ordered}")
+        log_list_truncated(ordered, "[CLASSIFY] Sorted order", max_items=10, level="debug")
         return ordered
 
     def _order_rating_character(self, tags: list[str], context: ImageContext) -> list[str]:
