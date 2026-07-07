@@ -21,6 +21,7 @@ from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.utils.logging_utils import log, section
 from caption_pipeline.utils.tag_cache import TagCategoryCache
 from caption_pipeline.utils.tag_patterns import PRE_CATEGORIZE_PATTERNS
+from caption_pipeline.tools.tag_utils import sort_tags_by_object
 
 CATEGORY_ORDER = [
     "rating",

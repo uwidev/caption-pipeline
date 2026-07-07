@@ -3,11 +3,12 @@
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 import requests
 
 from caption_pipeline.prompts.categorize_tag import CATEGORIZE_TAG_SYSTEM_PROMPT
+from caption_pipeline.tools.tag_utils import sort_tags_by_object
 from caption_pipeline.utils.logging_utils import log
 
 CATEGORY_ORDER = [
@@ -101,18 +102,17 @@ class TagCategoryCache:
             return
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            grouped: Dict[str, List[str]] = {cat: [] for cat in CATEGORY_NAMES}
+            grouped: dict[str, list[str]] = {cat: [] for cat in CATEGORY_NAMES}
             for tag, category in self.cache.items():
                 grouped[category].append(tag)
-            for cat in grouped:
-                grouped[cat].sort()
 
             with open(self.cache_path, "w", encoding="utf-8") as f:
                 for category in CATEGORY_NAMES:
                     tags = grouped.get(category, [])
                     if tags:
                         f.write(f"[{category}]\n")
-                        for tag in tags:
+                        # Use object-based sorting
+                        for tag in sort_tags_by_object(tags):
                             f.write(f"{tag}\n")
                         f.write("\n")
             self._dirty = False
@@ -236,7 +236,9 @@ class TagCategoryCache:
 
         total_elapsed = time.time() - total_start
         if tags:
-            log.info(f"All tags classified in {total_elapsed:.2f}s (avg {total_elapsed / len(tags):.2f}s/tag)")
+            log.info(
+                f"All tags classified in {total_elapsed:.2f}s (avg {total_elapsed / len(tags):.2f}s/tag)"
+            )
         self.save()
         return results
 
@@ -359,7 +361,7 @@ class TagCategoryCache:
                 # Split line by spaces and see if any word is a category
                 words = cleaned.split()
                 # Look from the end: often the category is the last word(s)
-                for i in range(len(words)-1, -1, -1):
+                for i in range(len(words) - 1, -1, -1):
                     candidate = " ".join(words[i:])
                     if candidate.lower() in cat_lower_map:
                         category = cat_lower_map[candidate.lower()]
