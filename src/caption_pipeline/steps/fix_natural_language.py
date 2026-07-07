@@ -19,7 +19,7 @@ import requests
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
-from caption_pipeline.prompts import NL_FILTER_SYSTEM_PROMPT
+from caption_pipeline.prompts import NL_NO_STYLE_SYSTEM_PROMPT
 from caption_pipeline.utils import OllamaConfig, OllamaManager
 from caption_pipeline.utils.logging_utils import (
     log,
@@ -46,7 +46,7 @@ The system prompt is extracted to prompts/filter.py for maintainability.""",
             "help": "Ollama API URL",
             "default": "http://localhost:11434/api/chat",
         },
-        {"flag": "--temperature FLOAT", "help": "Temperature for generation", "default": "0.3"},
+        {"flag": "--temperature FLOAT", "help": "Temperature for generation", "default": "0.2"},
         {"flag": "--retries INT", "help": "Max retries", "default": "3"},
         {"flag": "--timeout INT", "help": "Request timeout in seconds", "default": "120"},
         {"flag": "--no-backup", "help": "Don't back up original captions", "default": "backup"},
@@ -72,9 +72,9 @@ class FixNaturalLanguageStep(PipelineStep):
 
     def __init__(
         self,
-        model: str = "deepseek-r1:14b",
+        model: str = "dolphin-mistral:7b",
         ollama_url: str = "http://localhost:11434/api/chat",
-        temperature: float = 0.3,
+        temperature: float = 0.2,
         max_retries: int = 3,
         timeout: int = 120,
         backup_original: bool = True,
@@ -108,7 +108,7 @@ class FixNaturalLanguageStep(PipelineStep):
         self._manager: OllamaManager | None = None
 
         # System prompt from external file
-        self._system_prompt: str = NL_FILTER_SYSTEM_PROMPT
+        self._system_prompt: str = NL_NO_STYLE_SYSTEM_PROMPT
 
     def name(self) -> str:
         """Return the step's unique identifier."""

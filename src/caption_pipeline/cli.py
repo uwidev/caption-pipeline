@@ -631,6 +631,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 server_host = "127.0.0.1"
                 server_log_file = None
                 auto_manage_server = True
+                force = False
                 debug = args.debug
 
                 i = 1
@@ -654,6 +655,9 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--log-file":
                             server_log_file = Path(parts[i + 1])
                             i += 2
+                        case "--force":
+                            force = True
+                            i += 1
                         case "--no-auto-server":
                             auto_manage_server = False
                             i += 1
@@ -661,7 +665,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
                                 f"Available flags: --type, --model-path, --mmproj-path, "
-                                f"--port, --host, --log-file, --no-auto-server"
+                                f"--port, --host, --log-file, --force, --no-auto-server"
                             )
 
                 steps.append(
@@ -673,15 +677,16 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         server_host=server_host,
                         server_log_file=server_log_file,
                         auto_manage_server=auto_manage_server,
+                        force=force,
                         debug=debug,
                     )
                 )
 
             case "fix:natural_language" | "fix:nl":
                 # Filter natural language captions through Ollama
-                model = "deepseek-r1:14b"
+                model = "dolphin-mistral:7b"
                 ollama_url = "http://localhost:11434/api/chat"
-                temperature = 0.3
+                temperature = 0.2
                 max_retries = 3
                 timeout = 120
                 backup = True

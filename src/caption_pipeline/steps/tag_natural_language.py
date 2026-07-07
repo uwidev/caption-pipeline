@@ -70,7 +70,9 @@ SYSTEM_PROMPT = (
 descriptive captions from images.
 
 The step manages the server lifecycle at the BATCH level - the server starts once
-for all images in the batch and stops after processing completes.""",
+for all images in the batch and stops after processing completes.
+
+Use --force to regenerate captions even if they already exist.""",
     options=[
         {
             "flag": "--type {short,long,long_thoughts,long_thoughts_v2,json,json_comic,md_comic,min_structured_md,min_structured_json,chroma-style}",
@@ -82,6 +84,7 @@ for all images in the batch and stops after processing completes.""",
         {"flag": "--port INT", "help": "Server port", "default": "8081"},
         {"flag": "--host HOST", "help": "Server host", "default": "127.0.0.1"},
         {"flag": "--log-file PATH", "help": "Log file for server output"},
+        {"flag": "--force", "help": "Regenerate even if caption already exists", "default": "False"},
         {
             "flag": "--no-auto-server",
             "help": "Don't manage server lifecycle (assume server is already running)",
