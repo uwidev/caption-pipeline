@@ -1,0 +1,175 @@
+[rating]
+general
+sensitive
+questionable
+explicit
+safe
+suggestive
+nsfw
+
+[bodies]
+1boy
+2boys
+3boys
+4boys
+5boys
+multiple boys
+1girl
+2girls
+3girls
+4girls
+5girls
+multiple girls
+1other
+2others
+3others
+4others
+5others
+multiple others
+solo
+group
+
+[shot composition]
+full body
+waist up
+chest up
+close-up
+cowboy shot
+wide shot
+from below
+from above
+from side
+from front
+from back
+bird view
+worm view
+extreme closeup
+medium shot
+
+[pose]
+standing
+sitting
+lying
+kneeling
+crouching
+bending
+leaning
+on back
+on stomach
+on side
+arms up
+hands in pockets
+hands on hips
+head tilt
+legs crossed
+arms crossed
+hands behind back
+one leg up
+kneeling on one knee
+squatting
+planking
+
+[expressions]
+smile
+blush
+ahegao
+grin
+pout
+frown
+open mouth
+closed eyes
+tears
+sad
+angry
+surprised
+scared
+embarrassed
+happy
+excited
+tired
+worried
+nervous
+confident
+seductive
+dere
+tsundere
+yandere
+
+[environment]
+outdoors
+indoors
+night
+day
+sunset
+sunrise
+simple background
+white background
+gradient background
+cityscape
+skyline
+ocean
+sea
+river
+lake
+forest
+mountain
+desert
+beach
+room
+bedroom
+kitchen
+bathroom
+classroom
+office
+street
+park
+garden
+
+[atmosphere]
+cinematic
+moody
+dark
+bright
+cyberpunk
+steampunk
+fantasy
+noir
+vignette
+atmospheric
+ethereal
+neon
+pastel
+
+[action]
+running
+walking
+jumping
+swimming
+flying
+kissing
+hugging
+cuddling
+patting
+stroking
+groping
+spanking
+bound
+restrained
+leashed
+carrying
+pushing
+pulling
+riding
+driving
+diving
+floating
+sinking
+falling
+leaping
+dodging
+blocking
+defending
+attacking
+shooting
+stabbing
+slashing

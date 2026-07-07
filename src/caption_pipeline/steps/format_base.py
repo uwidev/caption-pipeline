@@ -47,7 +47,9 @@ class BaseFormatStep(PipelineStep):
         self.delimiter: str = delimiter
         self.use_spaces: bool = use_spaces
 
-    def _categorize_tags(self, tags: list[str], context: ImageContext) -> tuple[list[str], dict[str, Any]]:
+    def _categorize_tags(
+        self, tags: list[str], context: ImageContext
+    ) -> tuple[list[str], dict[str, Any]]:
         """
         Categorize tags for logging (does NOT reorder).
 
@@ -104,16 +106,18 @@ class BaseFormatStep(PipelineStep):
         """Log the tag breakdown."""
         if breakdown.get("rating"):
             log.info(f"Rating: {breakdown['rating']}")
-        
+
         if breakdown.get("special"):
-            log.info(f"Special: {', '.join(breakdown['special'][:5])}{'...' if len(breakdown['special']) > 5 else ''}")
-        
+            log.info(
+                f"Special: {', '.join(breakdown['special'][:5])}{'...' if len(breakdown['special']) > 5 else ''}"
+            )
+
         if breakdown.get("characters"):
-            chars = breakdown['characters']
+            chars = breakdown["characters"]
             log_list_truncated(chars, "Characters")
-        
+
         if breakdown.get("general"):
-            general = breakdown['general']
+            general = breakdown["general"]
             log_list_truncated(general, "General")
 
     def _format_tags(self, tags: list[str]) -> str:

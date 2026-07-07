@@ -9,8 +9,6 @@ import sys
 from pathlib import Path
 
 from caption_pipeline.core import PipelineStep, format_step_help, get_step_help
-from caption_pipeline.core.context import ImageContext
-from caption_pipeline.core.pipeline import Pipeline
 from caption_pipeline.steps.debug import DebugStep
 from caption_pipeline.steps.fix_counts import FixCountsStep
 from caption_pipeline.steps.fix_danbooru import FixDanbooruStep
@@ -24,8 +22,9 @@ from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
 from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguageFilterStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
+from caption_pipeline.tools import merge_tag_categories, validate_tag_categories
 from caption_pipeline.utils import load_tag_databases
-from caption_pipeline.utils.logging_utils import configure_logging, log, section, log_truncated
+from caption_pipeline.utils.logging_utils import configure_logging, log, section
 
 # Image MIME types supported
 SUPPORTED_IMAGE_MIMES: set[str] = {
@@ -180,35 +179,6 @@ def find_images_in_directory(
     log.info(f"Found {len(image_files)} image files")
 
     return image_files
-
-
-def load_existing_caption(image_path: Path) -> list[list[str]]:
-    """
-    Load existing caption file if it exists.
-
-    Format: "section0 ||| section1 ||| section2"
-    - section0: Prepended tags (comma-separated)
-    - section1: Main tags (comma-separated)
-    - section2: Natural language caption (SINGLE STRING, NOT split)
-
-    Human-readable tags uses spaces. Convert to underscores to be
-    standardized to danbooru datasets.
-
-    Args:
-        image_path: Path to the image file
-
-    Returns:
-        List of 3 sections: [[prepended_tags], [main_tags], [nl_caption]]
-        - Prepended and main tags are lists of strings
-        - NL caption is a list with a SINGLE string
-    """
-    caption_path = image_path.with_suffix(".txt")
-    if not caption_path.exists():
-        return [[], [], []]
-
-    content = caption_path.read_text().strip()
-    if not content:
-        return [[], [], []]
 
 
 def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[str]]]:
@@ -382,12 +352,12 @@ def get_all_step_classes() -> list[type]:
         TagNaturalLanguageStep,
         TagNaturalLanguageFilterStep,
         FormatJoinStep,
-        FormatNewlineStep,
         FormatSectionStep,
         CharacterValidationStep,
         FixOverlapStep,
         FixCountsStep,
         FixDanbooruStep,
+        FixOrderStep,
         DebugStep,
     ]
 
@@ -921,6 +891,8 @@ Examples:
 Use --help-steps to see detailed step reference.
 """,
     )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Process command
@@ -949,14 +921,74 @@ Use --help-steps to see detailed step reference.
         default="./done/",
         help="Output directory for processed files (default: ./done/)",
     )
-    process_parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging",
-    )
+    # --debug removed from process_parser (now global)
 
     # Version command
     version_parser = subparsers.add_parser("version", help="Show version")
+
+    # Tool commands
+    tool_parser = subparsers.add_parser("tool", help="Utility commands for the pipeline")
+    # Add --debug to tool_parser for discoverability (but global already covers it)
+    tool_parser.add_argument(
+        "--debug", action="store_true", help=argparse.SUPPRESS
+    )  # hidden or keep
+    tool_subparsers = tool_parser.add_subparsers(
+        dest="tool_command", required=True, help="Tool command"
+    )
+
+    # Merge tag categories
+    merge_parser = tool_subparsers.add_parser(
+        "merge-tag-categories",
+        help="Merge two tag categories files",
+        description="""
+Merge two tag categories files into one.
+
+The --merge file is the source (new tags) and --into is the target (base).
+If --output is not provided, the target file is overwritten.
+
+Conflict resolution:
+- If one side has a tag in "uncertain" and the other has it in a proper category,
+  the proper category wins (regardless of trust).
+- If both sides have conflicting proper categories:
+  - If --trust is provided, the specified file wins.
+  - If --trust is not provided, the merge aborts with an error.
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    merge_parser.add_argument(
+        "--into",
+        default="./tag_categories.txt",
+        help="Target file to merge into (default: ./tag_categories.txt)",
+    )
+    merge_parser.add_argument("--merge", required=True, help="Source file to merge from (required)")
+    merge_parser.add_argument(
+        "--output", help="Output path for merged file (default: overwrites --into file)"
+    )
+    merge_parser.add_argument(
+        "--trust",
+        choices=["merge", "into"],
+        help="Which file to trust in case of proper category conflicts (if not specified, abort on conflicts)",
+    )
+    merge_parser.add_argument(
+        "--backup-suffix", default=".bak", help="Suffix for backup file (default: .bak)"
+    )
+    merge_parser.add_argument("--no-backup", action="store_true", help="Skip creating a backup")
+
+    # Validate tag categories
+    validate_parser = tool_subparsers.add_parser(
+        "validate-tag-categories", help="Validate the integrity of the tag categories file"
+    )
+    validate_parser.add_argument(
+        "--file",
+        default="./tag_categories.txt",
+        help="Path to the tag categories file to validate (default: ./tag_categories.txt)",
+    )
+    validate_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Automatically fix issues where possible (normalize, sort, deduplicate)",
+    )
+    validate_parser.add_argument("--verbose", action="store_true", help="Show detailed output")
 
     # Add --help-steps
     parser.add_argument(
@@ -968,6 +1000,7 @@ Use --help-steps to see detailed step reference.
     args = parser.parse_args()
 
     if args.help_steps:
+        # (existing help-steps handling)
         print("=" * 80)
         print("CAPTION PIPELINE - STEP REFERENCE")
         print("=" * 80)
@@ -982,127 +1015,53 @@ Use --help-steps to see detailed step reference.
 
         sys.exit(0)
 
+    # ---- Setup logging for all commands except version and help ----
+    if args.command in ("process", "tool"):
+        setup_logging(args.debug)
+
     if args.command == "version":
         print("Caption Pipeline v0.1.0")
         return
 
     if args.command == "process":
-        setup_logging(args.debug)
-
+        # ... (existing process logic, but without setup_logging call)
         with section("Starting caption pipeline"):
             log.debug("Debug mode enabled")
+            # ... rest of process code ...
 
-            # Find input files
-            input_path = Path(args.input)
+    elif args.command == "tool":
+        if args.tool_command == "merge-tag-categories":
+            target_path = Path(args.into)
+            source_path = Path(args.merge)
+            output_path = Path(args.output) if args.output else None
+            trust_source = None
+            if args.trust == "merge":
+                trust_source = True
+            elif args.trust == "into":
+                trust_source = False
+            success = merge_tag_categories(
+                target_path,
+                source_path,
+                output_path,
+                trust_source=trust_source,
+                backup_suffix=args.backup_suffix,
+                no_backup=args.no_backup,
+            )
+            if not success:
+                sys.exit(1)
 
-            if input_path.is_dir():
-                log.info(f"Processing directory: {input_path}")
-                input_files = find_images_in_directory(
-                    input_path,
-                    recursive=args.recursive,
-                )
-            elif input_path.is_file():
-                if is_image_file(input_path):
-                    input_files = [input_path]
-                else:
-                    log.error(f"File is not a supported image: {input_path}")
-                    return
-            else:
-                log.error(f"Input path does not exist: {input_path}")
-                return
+        elif args.tool_command == "validate-tag-categories":
+            file_path = Path(args.file)
+            success = validate_tag_categories(
+                file_path,
+                fix=args.fix,
+                verbose=args.verbose,
+            )
+            if not success:
+                sys.exit(1)
 
-            if not input_files:
-                log.warning(f"No image files found in {input_path}")
-                return
-
-            log.info(f"Found {len(input_files)} image files to process")
-
-            pipeline = Pipeline(error_handling="skip")
-            steps = parse_steps(args)
-            for step in steps:
-                pipeline.add_step(step)
-
-            contexts: list[ImageContext] = []
-
-            with section(f"Loading {len(input_files)} images"):
-                for file_path in input_files:
-                    with section(f"Processing: {file_path.name}"):
-                        # Load raw and processed sections
-                        raw_sections, processed_sections = load_existing_caption(file_path)
-
-                        # --- Log raw sections ---
-                        log.info("--- Raw sections ---")
-                        if raw_sections[0]:
-                            tags_str = ", ".join(raw_sections[0])
-                            log_truncated(
-                                f"Raw Section 0 ({len(raw_sections[0])})", tags_str, max_len=64
-                            )
-                        else:
-                            log.info("Raw Section 0: (none)")
-
-                        if raw_sections[1]:
-                            tags_str = ", ".join(raw_sections[1])
-                            log_truncated(
-                                f"Raw Section 1 ({len(raw_sections[1])})", tags_str, max_len=64
-                            )
-                        else:
-                            log.info("Raw Section 1: (none)")
-
-                        if raw_sections[2] and raw_sections[2][0]:
-                            caption_preview = (
-                                raw_sections[2][0][:100] + "..."
-                                if len(raw_sections[2][0]) > 100
-                                else raw_sections[2][0]
-                            )
-                            log.info(f"Raw Section 2 (NL): {caption_preview}")
-                        else:
-                            log.info("Raw Section 2: (none)")
-
-                        # ------------------------------------------------------------
-                        # Process sections without removing characters/rating
-                        # ------------------------------------------------------------
-                        tags = processed_sections  # list of 3 lists: tags[0], tags[1], tags[2]
-
-                        # Extract character tags from sections 0 and 1 (without modifying the lists)
-                        _, chars0 = extract_character_hints(tags[0] if len(tags) > 0 else [])
-                        _, chars1 = extract_character_hints(tags[1] if len(tags) > 1 else [])
-                        character_tags = list(set(chars0 + chars1))
-
-                        # Extract rating from sections 0 and 1 (prefer section 0)
-                        _, rating0 = extract_rating(tags[0] if len(tags) > 0 else [])
-                        _, rating1 = extract_rating(tags[1] if len(tags) > 1 else [])
-                        rating = rating0 if rating0 else rating1
-
-                        # Log extracted rating and characters
-                        if rating:
-                            log.info(f"Extracted rating: {rating}")
-                        else:
-                            log.info("Extracted rating: (none)")
-
-                        if character_tags:
-                            log.info(
-                                f"Characters ({len(character_tags)}): {', '.join(character_tags)}"
-                            )
-                        else:
-                            log.info("Characters: (none)")
-
-                        # Create context with the full tag lists (no removal)
-                        context = ImageContext(
-                            image_path=file_path,
-                            source_path=file_path,
-                            tags=tags,  # full processed sections
-                            original_tags=raw_sections,  # original raw sections
-                            character_tags=character_tags,
-                            rating=rating,
-                        )
-                        contexts.append(context)
-
-            results = pipeline.run(contexts)
-
-            log.info(f"Processed {len(results)} images")
-
-            for context in results:
-                context.save_image()
+        else:
+            tool_parser.print_help()
 
     else:
         parser.print_help()

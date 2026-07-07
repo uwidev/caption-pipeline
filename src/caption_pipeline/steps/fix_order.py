@@ -20,6 +20,7 @@ from caption_pipeline.core.help import step_help
 from caption_pipeline.core.step import PipelineStep
 from caption_pipeline.utils.logging_utils import log, section
 from caption_pipeline.utils.tag_cache import TagCategoryCache
+from caption_pipeline.utils.tag_patterns import PRE_CATEGORIZE_PATTERNS
 
 CATEGORY_ORDER = [
     "rating",
@@ -39,23 +40,29 @@ CATEGORY_ORDER = [
 
 RATING_TAGS = {"general", "sensitive", "questionable", "explicit", "safe", "suggestive", "nsfw"}
 
-# Patterns for count tags
-COUNT_PATTERNS = [
-    r"^(\d+)boys?$",      # 1boy, 2boys, 3boys
-    r"^(\d+)girls?$",     # 1girl, 2girls, 3girls
-    r"^(\d+)others?$",    # 1other, 2others
+# Patterns for count/body tags (1boy, 2girls, multiple boys, etc.)
+BODY_PATTERNS = [
+    r"^(\d+)boys?$",          # 1boy, 2boys, 3boys
+    r"^(\d+)girls?$",         # 1girl, 2girls, 3girls
+    r"^(\d+)others?$",        # 1other, 2others
+    r"^multiple\s+(boys|girls|others?)$",  # multiple boys, multiple girls
 ]
 
 
 def is_count_tag(tag: str) -> bool:
-    """Check if a tag is a count tag (e.g., 1girl, 2boys, solo)."""
+    """Check if a tag is a count tag (e.g., 1girl, 2boys, solo, multiple boys)."""
     tag_lower = tag.lower().strip()
     if tag_lower == "solo":
         return True
-    for pattern in COUNT_PATTERNS:
+    for pattern in BODY_PATTERNS:
         if re.match(pattern, tag_lower):
             return True
     return False
+
+
+def is_body_tag(tag: str) -> bool:
+    """Check if a tag should be classified as 'bodies' (count tags like 1girl, 2boys)."""
+    return is_count_tag(tag)
 
 
 @step_help(
@@ -69,15 +76,17 @@ Modes:
   ordering across training examples. Unseen tags are classified via the LLM and
   added to the cache.
 
-  Rating and character tags are automatically identified and pre‑categorized before
-  the LLM call, so they are never sent to the LLM.
+  Rating, body/count tags (1girl, 2boys, etc.), and character tags are automatically
+  identified and pre‑categorized before the LLM call, so they are never sent to the LLM.
+  Additionally, flexible regex patterns pre‑categorize many common tag suffixes
+  (e.g., `*_hair` → body parts, `*_shirt` → wearables) to further reduce LLM usage.
 
 - rating_character: Reorder as: rating tag (if any), then count tags, then character tags,
   then everything else (preserving original order for the rest). This matches the
   ordering used by format:join.
 
 The step uses the persistent tag cache. If a tag is not yet in the cache, it will
-be classified on the fly via the LLM (Ollama).""",
+be classified on the fly via the Ollama LLM.""",
     options=[
         {
             "flag": "--section INT",
@@ -160,23 +169,71 @@ class FixOrderStep(PipelineStep):
         """
         Order tags by semantic category using the tag cache.
 
-        Rating and character tags are automatically pre‑categorized and excluded from
-        the LLM call.
+        Rating, body/count tags (1girl, 2boys, etc.), character tags, and many
+        common pattern-based tags are pre‑categorized and excluded from the LLM call.
         """
         log.debug(f"[CLASSIFY] Starting classification for {len(tags)} tags")
 
-        # Separate rating tags and character tags
+        # Separate rating tags
         rating_tags = [t for t in tags if t.lower() in RATING_TAGS]
+
+        # Separate body/count tags
+        body_tags = [t for t in tags if is_body_tag(t)]
+
+        # Separate character tags (from context) and special tags
         character_tags_from_context = context.get_character_tags()
-        # Also consider "original" and "borrowed_character" as special (we can treat as character)
         SPECIAL_CHARACTER = {"original", "borrowed_character"}
         special_tags = [t for t in tags if t.lower() in SPECIAL_CHARACTER]
 
-        # Combine all tags that we want to pre‑categorize
-        pre_categorized = set(rating_tags) | set(character_tags_from_context) | set(special_tags)
+        # Pattern-based pre-categorization
+        pattern_categories = {}
+        for tag in tags:
+            # Skip tags already handled
+            if (tag in rating_tags or tag in body_tags or tag in character_tags_from_context or tag in special_tags):
+                continue
+            # Apply patterns
+            for pattern, category in PRE_CATEGORIZE_PATTERNS:
+                if pattern.match(tag):
+                    pattern_categories[tag] = category
+                    break
 
-        # Tags that need LLM classification
+        # Log pre-categorization breakdown
+        log.debug(f"[CLASSIFY] Pre-categorization breakdown:")
+        log.debug(f"  Rating tags: {len(rating_tags)}")
+        if rating_tags:
+            log.debug(f"    {rating_tags}")
+        log.debug(f"  Body/count tags: {len(body_tags)}")
+        if body_tags:
+            log.debug(f"    {body_tags}")
+        log.debug(f"  Character tags (from context): {len(character_tags_from_context)}")
+        if character_tags_from_context:
+            log.debug(f"    {character_tags_from_context}")
+        log.debug(f"  Special tags: {len(special_tags)}")
+        if special_tags:
+            log.debug(f"    {special_tags}")
+        log.debug(f"  Pattern-categorized tags: {len(pattern_categories)}")
+        if pattern_categories:
+            # Group by category for better readability
+            by_cat = {}
+            for tag, cat in pattern_categories.items():
+                by_cat.setdefault(cat, []).append(tag)
+            for cat, tag_list in by_cat.items():
+                log.debug(f"    {cat}: {tag_list}")
+
+        # Combine all tags that we want to pre‑categorize
+        pre_categorized = (
+            set(rating_tags) |
+            set(body_tags) |
+            set(character_tags_from_context) |
+            set(special_tags) |
+            set(pattern_categories.keys())
+        )
+
+        # Tags that still need LLM classification
         tags_to_classify = [t for t in tags if t not in pre_categorized]
+        log.debug(f"[CLASSIFY] Tags to classify via LLM: {len(tags_to_classify)}")
+        if tags_to_classify:
+            log.debug(f"  {tags_to_classify}")
 
         # Initialize cache
         cache = TagCategoryCache()
@@ -185,15 +242,23 @@ class FixOrderStep(PipelineStep):
         for tag in rating_tags:
             cache.set(tag, "rating")
 
+        # Manually set body/count tags
+        for tag in body_tags:
+            cache.set(tag, "bodies")
+
         # Manually set character tags (including special ones)
         for tag in character_tags_from_context:
             cache.set(tag, "character name or series")
         for tag in special_tags:
-            cache.set(tag, "character name or series")  # treat as character
+            cache.set(tag, "character name or series")
+
+        # Set pattern-based categories
+        for tag, category in pattern_categories.items():
+            cache.set(tag, category)
 
         # Classify remaining tags via LLM
         if tags_to_classify:
-            log.debug(f"[CLASSIFY] {len(tags_to_classify)} tags need LLM classification")
+            log.debug(f"[CLASSIFY] {len(tags_to_classify)} tags need LLM classification (others pre-categorized)")
             try:
                 classified = cache.classify_tags_batch(
                     tags_to_classify,
@@ -212,7 +277,6 @@ class FixOrderStep(PipelineStep):
         # Build final category mapping for all tags
         tag_cat = {}
         for tag in tags:
-            # Use cache if available, else fallback to uncertain
             cached_cat = cache.get(tag)
             if cached_cat is not None:
                 tag_cat[tag] = cached_cat
@@ -252,7 +316,7 @@ class FixOrderStep(PipelineStep):
         ordered = []
         if rating:
             ordered.append(rating)
-        ordered.extend(count_tags)   # count tags come after rating, before characters
+        ordered.extend(count_tags)
         ordered.extend(chars)
         ordered.extend(rest)
 

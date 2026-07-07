@@ -45,6 +45,9 @@ from caption_pipeline.utils.logging_utils import (
     log_list_truncated,
     log_scored_list_truncated,
 )
+from caption_pipeline.utils.tag_patterns import (
+    PRE_CATEGORIZE_PATTERNS,
+)
 
 __all__ = [
     # tag_db
@@ -79,4 +82,6 @@ __all__ = [
     "log_truncated",
     "log_list_truncated",
     "log_scored_list_truncated",
+    # Tag patterns
+    "PRE_CATEGORIZE_PATTERNS",
 ]

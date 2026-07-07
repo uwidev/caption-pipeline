@@ -45,11 +45,9 @@ def configure_logging(debug: bool = False) -> None:
     def add_indentation(record: dict[str, Any]) -> bool:
         """Add indentation to every log record and clean up module names."""
         record["extra"]["indent"] = _INDENT_STR * _indent_level[0]
-        
+
         # Clean up module name to just the last part
-        # The 'name' field contains the full module path (e.g., 'caption_pipeline.cli')
         if record.get("name"):
-            # Split by '.' and get the last part
             record["name"] = record["name"].split(".")[-1]
         return True
 
@@ -65,9 +63,8 @@ def configure_logging(debug: bool = False) -> None:
     else:
         level = "INFO"
         format_str = (
-            "<green>{time:HH:mm:ss}</green> | "
+            "<green>{time:HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan> - "
             "{extra[indent]}"
             "<level>{message}</level>"
         )
@@ -187,7 +184,7 @@ def log_list_truncated(
     else:
         for i, item in enumerate(items[:max_items], 1):
             getattr(logger.opt(depth=frame_depth), level)(f"  {i:>3d}. {item}")
-        getattr(logger.opt(depth=frame_depth), level)(f"     ...")
+        getattr(logger.opt(depth=frame_depth), level)("     ...")
         for i, item in enumerate(items[max_items:], max_items + 1):
             getattr(logger.opt(depth=frame_depth), continuation_level)(f"  {i:>3d}. {item}")
 
