@@ -13,7 +13,7 @@ from caption_pipeline.steps.format_section import FormatSectionStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
 from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
-from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguageFilterStep
+from caption_pipeline.steps.fix_natural_language import FixNaturalLanguageStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 
@@ -25,7 +25,7 @@ __all__ = [
     "TagResolveStep",
     "TagManipulateStep",
     "TagNaturalLanguageStep",
-    "TagNaturalLanguageFilterStep",
+    "FixNaturalLanguageStep",
     "CharacterValidationStep",
     "FixOverlapStep",
     "FixCountsStep",

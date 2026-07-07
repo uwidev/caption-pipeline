@@ -25,7 +25,7 @@ from caption_pipeline.steps import (
     FormatJoinStep,
     TagGenerationStep,
     TagManipulateStep,
-    TagNaturalLanguageFilterStep,
+    FixNaturalLanguageStep,
     TagNaturalLanguageStep,
     TagResolveStep,
 )
@@ -41,6 +41,6 @@ __all__ = [
     "TagResolveStep",
     "TagManipulateStep",
     "TagNaturalLanguageStep",
-    "TagNaturalLanguageFilterStep",
+    "FixNaturalLanguageStep",
     "FormatJoinStep",
 ]

@@ -28,7 +28,7 @@ from caption_pipeline.utils.logging_utils import (
 
 
 @step_help(
-    name="tag:nl_filter",
+    name="fix:natural_language",
     description="Filter natural language captions through Ollama to remove artstyle references.",
     long_description="""This step sends the NL caption to an Ollama model with a system
 prompt to remove artistic medium, style names, and technique references while
@@ -58,7 +58,7 @@ The system prompt is extracted to prompts/filter.py for maintainability.""",
     ],
     example="tag:nl_filter --model llama3.2:3b",
 )
-class TagNaturalLanguageFilterStep(PipelineStep):
+class FixNaturalLanguageStep(PipelineStep):
     """
     Filter natural language captions through Ollama to remove artstyle mentions.
 

@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 
 from caption_pipeline.core import PipelineStep, format_step_help, get_step_help
+from caption_pipeline.core.context import ImageContext
+from caption_pipeline.core.pipeline import Pipeline
 from caption_pipeline.steps.debug import DebugStep
 from caption_pipeline.steps.fix_counts import FixCountsStep
 from caption_pipeline.steps.fix_danbooru import FixDanbooruStep
@@ -19,7 +21,7 @@ from caption_pipeline.steps.format_section import FormatSectionStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
 from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
-from caption_pipeline.steps.tag_natural_language_filter import TagNaturalLanguageFilterStep
+from caption_pipeline.steps.fix_natural_language import FixNaturalLanguageStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.tools import merge_tag_categories, validate_tag_categories
@@ -350,7 +352,6 @@ def get_all_step_classes() -> list[type]:
         TagResolveStep,
         TagManipulateStep,
         TagNaturalLanguageStep,
-        TagNaturalLanguageFilterStep,
         FormatJoinStep,
         FormatSectionStep,
         CharacterValidationStep,
@@ -358,6 +359,7 @@ def get_all_step_classes() -> list[type]:
         FixCountsStep,
         FixDanbooruStep,
         FixOrderStep,
+        FixNaturalLanguageStep,
         DebugStep,
     ]
 
@@ -679,7 +681,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                     )
                 )
 
-            case "tag:tag_natural_language_filter" | "tag:nl_filter" | "tag:nlf":
+            case "fix:natural_language" | "fix:nl":
                 # Filter natural language captions through Ollama
                 model = "deepseek-r1:14b"
                 ollama_url = "http://localhost:11434/api/chat"
@@ -721,7 +723,7 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                             )
 
                 steps.append(
-                    TagNaturalLanguageFilterStep(
+                    FixNaturalLanguageStep(
                         model=model,
                         ollama_url=ollama_url,
                         temperature=temperature,
@@ -891,8 +893,6 @@ Examples:
 Use --help-steps to see detailed step reference.
 """,
     )
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Process command
@@ -921,20 +921,18 @@ Use --help-steps to see detailed step reference.
         default="./done/",
         help="Output directory for processed files (default: ./done/)",
     )
-    # --debug removed from process_parser (now global)
+    process_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
 
     # Version command
     version_parser = subparsers.add_parser("version", help="Show version")
 
     # Tool commands
     tool_parser = subparsers.add_parser("tool", help="Utility commands for the pipeline")
-    # Add --debug to tool_parser for discoverability (but global already covers it)
-    tool_parser.add_argument(
-        "--debug", action="store_true", help=argparse.SUPPRESS
-    )  # hidden or keep
-    tool_subparsers = tool_parser.add_subparsers(
-        dest="tool_command", required=True, help="Tool command"
-    )
+    tool_subparsers = tool_parser.add_subparsers(dest="tool_command", required=True, help="Tool command")
 
     # Merge tag categories
     merge_parser = tool_subparsers.add_parser(
@@ -958,21 +956,32 @@ Conflict resolution:
     merge_parser.add_argument(
         "--into",
         default="./tag_categories.txt",
-        help="Target file to merge into (default: ./tag_categories.txt)",
+        help="Target file to merge into (default: ./tag_categories.txt)"
     )
-    merge_parser.add_argument("--merge", required=True, help="Source file to merge from (required)")
     merge_parser.add_argument(
-        "--output", help="Output path for merged file (default: overwrites --into file)"
+        "--merge",
+        required=True,
+        help="Source file to merge from (required)"
+    )
+    merge_parser.add_argument(
+        "--output",
+        help="Output path for merged file (default: overwrites --into file)"
     )
     merge_parser.add_argument(
         "--trust",
         choices=["merge", "into"],
-        help="Which file to trust in case of proper category conflicts (if not specified, abort on conflicts)",
+        help="Which file to trust in case of proper category conflicts (if not specified, abort on conflicts)"
     )
     merge_parser.add_argument(
-        "--backup-suffix", default=".bak", help="Suffix for backup file (default: .bak)"
+        "--backup-suffix",
+        default=".bak",
+        help="Suffix for backup file (default: .bak)"
     )
-    merge_parser.add_argument("--no-backup", action="store_true", help="Skip creating a backup")
+    merge_parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip creating a backup"
+    )
 
     # Validate tag categories
     validate_parser = tool_subparsers.add_parser(
@@ -1000,7 +1009,6 @@ Conflict resolution:
     args = parser.parse_args()
 
     if args.help_steps:
-        # (existing help-steps handling)
         print("=" * 80)
         print("CAPTION PIPELINE - STEP REFERENCE")
         print("=" * 80)
@@ -1015,19 +1023,143 @@ Conflict resolution:
 
         sys.exit(0)
 
-    # ---- Setup logging for all commands except version and help ----
-    if args.command in ("process", "tool"):
-        setup_logging(args.debug)
-
     if args.command == "version":
         print("Caption Pipeline v0.1.0")
         return
 
     if args.command == "process":
-        # ... (existing process logic, but without setup_logging call)
+        setup_logging(args.debug)
+
         with section("Starting caption pipeline"):
             log.debug("Debug mode enabled")
-            # ... rest of process code ...
+
+            # Find input files
+            input_path = Path(args.input)
+
+            if input_path.is_dir():
+                log.info(f"Processing directory: {input_path}")
+                input_files = find_images_in_directory(
+                    input_path,
+                    recursive=args.recursive,
+                )
+            elif input_path.is_file():
+                if is_image_file(input_path):
+                    input_files = [input_path]
+                else:
+                    log.error(f"File is not a supported image: {input_path}")
+                    return
+            else:
+                log.error(f"Input path does not exist: {input_path}")
+                return
+
+            if not input_files:
+                log.warning(f"No image files found in {input_path}")
+                return
+
+            log.info(f"Found {len(input_files)} image files to process")
+
+            pipeline = Pipeline(error_handling="skip")
+            steps = parse_steps(args)
+            for step in steps:
+                pipeline.add_step(step)
+
+            contexts: list[ImageContext] = []
+
+            with section(f"Loading {len(input_files)} images"):
+                for file_path in input_files:
+                    with section(f"Processing: {file_path.name}"):
+                        # Load raw and processed sections
+                        raw_sections, processed_sections = load_existing_caption(file_path)
+
+                        # --- Log raw sections ---
+                        log.info("--- Raw sections ---")
+                        if raw_sections[0]:
+                            tags_str = ", ".join(raw_sections[0])
+                            log.info(f"Raw Section 0 ({len(raw_sections[0])}): {tags_str}")
+                        else:
+                            log.info("Raw Section 0: (none)")
+
+                        if raw_sections[1]:
+                            tags_str = ", ".join(raw_sections[1])
+                            log.info(f"Raw Section 1 ({len(raw_sections[1])}): {tags_str}")
+                        else:
+                            log.info("Raw Section 1: (none)")
+
+                        if raw_sections[2] and raw_sections[2][0]:
+                            caption_preview = (
+                                raw_sections[2][0][:100] + "..."
+                                if len(raw_sections[2][0]) > 100
+                                else raw_sections[2][0]
+                            )
+                            log.info(f"Raw Section 2 (NL): {caption_preview}")
+                        else:
+                            log.info("Raw Section 2: (none)")
+
+                        # --- Use processed sections for all downstream logic ---
+                        tags = processed_sections  # list of 3 lists: tags[0], tags[1], tags[2]
+
+                        # --- Log processed sections ---
+                        log.info("--- Processed sections ---")
+                        if tags[0]:
+                            tags_str = ", ".join(tags[0])
+                            log.info(f"Processed Section 0 ({len(tags[0])}): {tags_str}")
+                        else:
+                            log.info("Processed Section 0: (none)")
+
+                        if tags[1]:
+                            tags_str = ", ".join(tags[1])
+                            log.info(f"Processed Section 1 ({len(tags[1])}): {tags_str}")
+                        else:
+                            log.info("Processed Section 1: (none)")
+
+                        if tags[2] and tags[2][0]:
+                            caption_preview = (
+                                tags[2][0][:100] + "..." if len(tags[2][0]) > 100 else tags[2][0]
+                            )
+                            log.info(f"Processed Section 2 (NL): {caption_preview}")
+                        else:
+                            log.info("Processed Section 2: (none)")
+
+                        # Extract character tags without modifying the lists
+                        _, chars0 = extract_character_hints(tags[0] if len(tags) > 0 else [])
+                        _, chars1 = extract_character_hints(tags[1] if len(tags) > 1 else [])
+                        character_tags = list(set(chars0 + chars1))
+
+                        # Extract rating without modifying the lists
+                        _, rating0 = extract_rating(tags[0] if len(tags) > 0 else [])
+                        _, rating1 = extract_rating(tags[1] if len(tags) > 1 else [])
+                        rating = rating0 if rating0 else rating1
+
+                        # Log extracted rating and characters
+                        if rating:
+                            log.info(f"Extracted rating: {rating}")
+                        else:
+                            log.info("Extracted rating: (none)")
+
+                        if character_tags:
+                            log.info(
+                                f"Characters ({len(character_tags)}): {', '.join(character_tags)}"
+                            )
+                        else:
+                            log.info("Characters: (none)")
+
+                        # Create context with the full tag lists
+                        context = ImageContext(
+                            image_path=file_path,
+                            source_path=file_path,
+                            tags=tags,
+                            original_tags=raw_sections,
+                            character_tags=character_tags,
+                            rating=rating,
+                        )
+                        contexts.append(context)
+
+            results = pipeline.run(contexts)
+
+            log.info(f"Processed {len(results)} images")
+
+            for context in results:
+                context.save_image()
 
     elif args.command == "tool":
         if args.tool_command == "merge-tag-categories":
@@ -1036,9 +1168,10 @@ Conflict resolution:
             output_path = Path(args.output) if args.output else None
             trust_source = None
             if args.trust == "merge":
-                trust_source = True
+                trust_source = True   # trust the source file (--merge)
             elif args.trust == "into":
-                trust_source = False
+                trust_source = False  # trust the target file (--into)
+            # trust_source = None means abort on proper conflicts
             success = merge_tag_categories(
                 target_path,
                 source_path,
