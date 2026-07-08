@@ -76,14 +76,34 @@ class FormatJoinStep(PipelineStep):
                 result.append(tag)
         return result
 
-    def _format_section(self, tags: list[str]) -> tuple[str, list[str]]:
+    def _format_section(self, tags: list[str], context: ImageContext) -> tuple[str, list[str]]:
+        """Format a section, adding @ prefix to artist tags."""
         if not tags:
             return "", []
+
+        # Get artist tags from context (stored without @)
+        artist_set = set(context.get_artists())
+
+        # Deduplicate if enabled
         if self.deduplicate_tags:
             tags = self._deduplicate_tags(tags)
-        if self.use_spaces:
-            tags = [tag.replace("_", " ") for tag in tags]
-        return ", ".join(tags), tags
+
+        # Add @ prefix to artist tags, convert spaces if enabled
+        formatted_tags = []
+        for tag in tags:
+            if tag in artist_set:
+                # Artist tags get @ prefix
+                formatted_tag = f"@{tag}"
+            else:
+                formatted_tag = tag
+
+            # Convert underscores to spaces if enabled
+            if self.use_spaces:
+                formatted_tag = formatted_tag.replace("_", " ")
+
+            formatted_tags.append(formatted_tag)
+
+        return ", ".join(formatted_tags), formatted_tags
 
     def process(self, context: ImageContext) -> ImageContext | None:
         with section(f"Processing: {context.image_path.name}"):
@@ -92,17 +112,17 @@ class FormatJoinStep(PipelineStep):
 
             # SECTION 0: Prepended tags
             if context.tags[0]:
-                section0, breakdown0 = self._format_section(context.tags[0])
+                section0, breakdown0 = self._format_section(context.tags[0], context)
                 sections_str[0] = section0
                 log_list_truncated(breakdown0, "Prepended")
 
             # SECTION 1: Main tags
             if context.tags[1]:
-                section1, breakdown1 = self._format_section(context.tags[1])
+                section1, breakdown1 = self._format_section(context.tags[1], context)
                 sections_str[1] = section1
                 log_list_truncated(breakdown1, "Main")
 
-            # SECTION 2: NL caption
+            # SECTION 2: NL caption (unchanged)
             if context.tags[2]:
                 if len(context.tags[2]) == 1:
                     section2 = context.tags[2][0]

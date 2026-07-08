@@ -95,13 +95,23 @@ class FixDanbooruStep(PipelineStep):
 
         return False
 
-    def _fix_tags(self, tags: list[str]) -> list[str]:
+    def _fix_tags(self, tags: list[str], context: ImageContext) -> list[str]:
         """Fix a list of tags to only keep danbooru tags."""
         result = []
+        
+        # Get preserved tags from context
+        character_tags = set(context.get_character_tags())
+        artist_tags = set(context.get_artists())
+        preserved_tags = character_tags | artist_tags
 
         for tag in tags:
             # Always keep whitelisted tags
             if tag in self.whitelist:
+                result.append(tag)
+                continue
+
+            # Always keep character and artist tags (from context)
+            if tag in preserved_tags:
                 result.append(tag)
                 continue
 
@@ -143,7 +153,7 @@ class FixDanbooruStep(PipelineStep):
                     continue
 
                 original_counts[section_idx] = len(tags)
-                fixed = self._fix_tags(tags)
+                fixed = self._fix_tags(tags, context)
                 fixed_counts[section_idx] = len(fixed)
 
                 # Track removed tags

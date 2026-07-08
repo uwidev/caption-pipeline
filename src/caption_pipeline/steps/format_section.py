@@ -89,8 +89,8 @@ class FormatSectionStep(BaseFormatStep):
                 log.debug(f"Section {self.section} is empty - skipping")
                 return context
 
-            # Use categorization for logging (does not reorder)
-            _, breakdown = self._categorize_tags(tags, context)
+            # Get artist tags from context
+            artist_set = set(context.get_artists())
 
             # Format the output based on section
             if self.section == 2:
@@ -98,22 +98,32 @@ class FormatSectionStep(BaseFormatStep):
                 if len(tags) == 1:
                     output = tags[0]
                 else:
-                    # Multiple NL entries - join with newlines
                     output = "\n".join(tags)
             else:
-                # Sections 0 and 1 are tags - apply formatting (spaces, delimiter)
-                output = self._format_tags(tags)
+                # Sections 0 and 1 are tags - apply formatting
+                formatted_tags = []
+                for tag in tags:
+                    if tag in artist_set:
+                        formatted_tag = f"@{tag}"
+                    else:
+                        formatted_tag = tag
 
-            # Log breakdown
+                    if self.use_spaces:
+                        formatted_tag = formatted_tag.replace("_", " ")
+
+                    formatted_tags.append(formatted_tag)
+
+                output = self.delimiter.join(formatted_tags)
+
+            # Log breakdown (pass tags without @ prefix for categorization)
+            _, breakdown = self._categorize_tags(tags, context)
             self._log_breakdown(breakdown)
 
             # Save to disk
             output_path = self._save_output(context, output)
 
-            # Log output with truncation
             log_truncated("Written", output, max_len=64, level="info", continuation_level="debug")
 
-            # Store result
             result = context.copy()
             result.metadata[f"section_{self.section}_output"] = output
             result.metadata[f"section_{self.section}_path"] = str(output_path)

@@ -30,6 +30,7 @@ class ImageContext:
         original_tags: Complete original tags from all sections (preserved for reference)
         rating: Optional content rating (safe, questionable, explicit)
         character_tags: List of character tag names (normalized, lowercase with underscores)
+        artists: List of artist tag names (prefixed with @, normalized, lowercase with underscores)
         metadata: Additional metadata storage
         history: Processing history
         inferenced_tags: All tags from AI inference (tag -> confidence)
@@ -39,9 +40,12 @@ class ImageContext:
     source_path: Path
     image_data: Image.Image | None = None
     tags: list[list[str]] = field(default_factory=lambda: [[], [], []])
-    original_tags: list[list[str]] = field(default_factory=lambda: [[], [], []])  # Preserved originals
+    original_tags: list[list[str]] = field(
+        default_factory=lambda: [[], [], []]
+    )  # Preserved originals
     rating: str | None = None
     character_tags: list[str] = field(default_factory=list)
+    artists: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     history: list[str] = field(default_factory=list)
     inferenced_tags: dict[str, float] | None = None
@@ -123,6 +127,7 @@ class ImageContext:
             original_tags=[section.copy() for section in self.original_tags],
             rating=self.rating,
             character_tags=self.character_tags.copy(),
+            artists=self.artists.copy(),
             metadata=self.metadata.copy(),
             history=self.history.copy(),
             inferenced_tags=(
@@ -163,6 +168,24 @@ class ImageContext:
         """Clear all character tags."""
         self.character_tags = []
 
+    # ===== Artist Helpers =====
+
+    def has_artists(self) -> bool:
+        """Check if any artist tags exist."""
+        return bool(self.artists)
+
+    def get_artists(self) -> list[str]:
+        """Get the list of artist tag names."""
+        return self.artists.copy()
+
+    def set_artists(self, tags: list[str]) -> None:
+        """Set artist tags."""
+        self.artists = tags.copy()
+
+    def clear_artists(self) -> None:
+        """Clear all artist tags."""
+        self.artists = []
+
     # ===== Original Tags Helpers =====
 
     def get_original_tags(self, section: int = -1) -> list[str] | list[list[str]]:
@@ -192,3 +215,14 @@ class ImageContext:
             if section < len(self.original_tags):
                 result.extend(self.original_tags[section])
         return result
+
+    def get_tags_without_artists(self, section: int = 1) -> list[str]:
+        """
+        Get tags from a section with artist tags removed.
+
+        Artist tags are those starting with '@' in the original tags,
+        or stored in self.artists.
+        """
+        tags = self.get_tags(section)
+        artist_set = set(self.artists)
+        return [t for t in tags if t not in artist_set]

@@ -586,9 +586,11 @@ class TagNaturalLanguageStep(PipelineStep):
         # Get all tags from section 1
         all_tags = context.get_tags(section=1)
         character_tags = context.get_character_tags()
+        artist_tags = context.get_artists()
 
-        # Remove character tags from the tags list to avoid duplication
-        tags_for_prompt = [t for t in all_tags if t not in character_tags]
+        # Remove artist tags and character tags from the tags list
+        exclude_set = set(character_tags) | set(artist_tags)
+        tags_for_prompt = [t for t in all_tags if t not in exclude_set]
 
         if not tags_for_prompt and not self.require_tags:
             tags_for_prompt = context.get_tags(section=0)  # fallback to prepended

@@ -328,22 +328,26 @@ class FixOrderStep(PipelineStep):
 
     def _order_rating_character(self, tags: list[str], context: ImageContext) -> list[str]:
         """
-        Order as: rating → count tags → character tags → everything else.
+        Order as: artists → rating → count tags → character tags → everything else.
         """
         rating = context.rating
         chars = context.get_character_tags()
+        artists = context.get_artists()
 
         # Separate count tags
         count_tags = [t for t in tags if is_count_tag(t)]
 
-        # The rest: tags that are not in chars, not rating, not count
+        # The rest: tags that are not in artists, not rating, not chars, not count
         rest = [
-            t
-            for t in tags
-            if t not in chars and (rating is None or t != rating) and not is_count_tag(t)
+            t for t in tags
+            if t not in artists
+            and t not in chars
+            and (rating is None or t != rating)
+            and not is_count_tag(t)
         ]
 
         ordered = []
+        ordered.extend(artists)
         if rating:
             ordered.append(rating)
         ordered.extend(count_tags)

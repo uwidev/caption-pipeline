@@ -237,7 +237,7 @@ def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[
     return raw_sections, processed_sections
 
 
-def extract_rating(tags: list[str]) -> tuple[list[str], str | None]:
+def find_rating(tags: list[str]) -> tuple[list[str], str | None]:
     """
     Validate that only one rating tag exists in the tags.
 
@@ -246,40 +246,68 @@ def extract_rating(tags: list[str]) -> tuple[list[str], str | None]:
 
     Returns:
         Tuple of (filtered_tags, rating)
-        - filtered_tags: Tags without rating tags
+        - cleaned_tags: Tags with only a max one rating
         - rating: The rating tag if found, None otherwise
 
     Raises:
         ValueError: If multiple rating tags are found
     """
     found_ratings = []
-    filtered_tags = []
+    cleaned_tags = []
 
     for tag in tags:
-        normalized = tag.lower().strip()
-        if normalized in RATING_TAGS:
+        if tag in RATING_TAGS:
+            if not found_ratings:
+                # add only the first (left-most) rating we find
+                cleaned_tags.append(tag)
             found_ratings.append(tag)
         else:
-            filtered_tags.append(tag)
+            cleaned_tags.append(tag)
 
     if len(found_ratings) > 1:
         log.warning(
             f"Multiple rating tags found: {', '.join(found_ratings)}. "
             f"Using '{found_ratings[0]}' as the rating."
         )
-        # Keep the first rating tag found, remove others
-        rating = found_ratings[0]
-    elif len(found_ratings) == 1:
-        rating = found_ratings[0]
-    else:
-        rating = None
 
-    return filtered_tags, rating
+    rating = found_ratings[0] if found_ratings else None
+
+    return cleaned_tags, rating
 
 
-def extract_character_hints(tags: list[str]) -> tuple[list[str], list[str]]:
+def find_artist_hints(tags: list[str]) -> tuple[list[str], list[str]]:
     """
-    Extract character tags from user hints using the central tag database.
+    Find artist tags from a list of tags and cleanup marker.
+
+    Artists are prefixed with a marker '@'.
+
+    Args:
+        tags: List of tags to process
+
+    Returns:
+        Tuple of (cleaned_tags, artists)
+    """
+    artists: list[str] = []
+    cleaned_tags: list[str] = []
+
+    for tag in tags:
+        t = tag
+        if tag.startswith("@"):
+            # Extract the actual name without @ prefix
+            t = tag.removeprefix("@")
+            if t:  # edge case random empty marker tag '@'
+                artists.append(t)
+
+        cleaned_tags.append(t)
+
+    return cleaned_tags, artists
+
+
+def find_character_hints(tags: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Extract character tags list of tags and cleanup marker.
+
+    Characters are denoted with prefix marker '@character:'
 
     Rules:
     1. Tags with "character:" prefix are ALWAYS characters (user explicitly said so)
@@ -289,46 +317,42 @@ def extract_character_hints(tags: list[str]) -> tuple[list[str], list[str]]:
         tags: List of tags to process
 
     Returns:
-        Tuple of (remaining_tags, character_tags)
+        Tuple of (cleaned_tags, character_tags)
     """
 
     characters: list[str] = []
-    remaining: list[str] = []
+    cleaned_tags: list[str] = []
     explicit_hints: list[str] = []
 
     # Try 1: Look for character: prefixed tags first
     for tag in tags:
-        if tag.startswith("character:"):
+        t = tag
+        if t.startswith("character:"):
             # Extract the actual name
-            char_name = tag[10:].strip().lower().replace(" ", "_")
-            if char_name:
-                explicit_hints.append(char_name)
+            t = t.removeprefix("character:").strip() # strip to cover 'character: foo' case
+            if t: # covers empty character name 'character: '
+                characters.append(t)
 
-    if explicit_hints:
+        cleaned_tags.append(t)
+
+    if characters:
         # We found explicit characters earlier, keep everything except character tags
-        remaining.extend([tag for tag in tags if not tag.startswith("character:")])
-        characters = explicit_hints
         log.debug(f"Found {len(characters)} explicit character hints")
-        return remaining, characters
+        return cleaned_tags, characters
 
     # Try 2: Check each tag if they are a character, just not prefixed
     from caption_pipeline.utils.tag_db import load_character_tags_only
 
     character_tag_set = load_character_tags_only()
-    tags_to_remove = []
 
     for tag in tags:
         if tag in character_tag_set:
             characters.append(tag)
-            tags_to_remove.append(tag)
             log.debug(f"Found character in tag database: '{tag}")
-        else:
-            remaining.append(tag)
 
-    if characters:
-        return remaining, characters
+        cleaned_tags.append(tag)
 
-    return remaining, characters
+    return cleaned_tags, characters
 
 
 def get_all_step_classes() -> list[type]:
@@ -1040,7 +1064,7 @@ Conflict resolution:
 
             log.info(f"Found {len(input_files)} image files to process")
 
-            pipeline = Pipeline(error_handling="skip")
+            pipeline = Pipeline(error_handling="stop")
             steps = parse_steps(args)
             for step in steps:
                 pipeline.add_step(step)
@@ -1103,16 +1127,21 @@ Conflict resolution:
                             log.info("Processed Section 2: (none)")
 
                         # Extract character tags without modifying the lists
-                        _, chars0 = extract_character_hints(tags[0] if len(tags) > 0 else [])
-                        _, chars1 = extract_character_hints(tags[1] if len(tags) > 1 else [])
+                        tags[0], chars0 = find_character_hints(tags[0] if len(tags) > 0 else [])
+                        tags[1], chars1 = find_character_hints(tags[1] if len(tags) > 1 else [])
                         character_tags = list(set(chars0 + chars1))
 
+                        # Extract artist tags without modifying the lists
+                        tags[0], artists0 = find_artist_hints(tags[0] if len(tags) > 0 else [])
+                        tags[1], artists1 = find_artist_hints(tags[1] if len(tags) > 1 else [])
+                        artist_tags = list(set(artists0 + artists1))
+
                         # Extract rating without modifying the lists
-                        _, rating0 = extract_rating(tags[0] if len(tags) > 0 else [])
-                        _, rating1 = extract_rating(tags[1] if len(tags) > 1 else [])
+                        tags[0], rating0 = find_rating(tags[0] if len(tags) > 0 else [])
+                        tags[1], rating1 = find_rating(tags[1] if len(tags) > 1 else [])
                         rating = rating0 if rating0 else rating1
 
-                        # Log extracted rating and characters
+                        # Log extracted rating, characters, and artists
                         if rating:
                             log.info(f"Extracted rating: {rating}")
                         else:
@@ -1125,6 +1154,11 @@ Conflict resolution:
                         else:
                             log.info("Characters: (none)")
 
+                        if artist_tags:
+                            log.info(f"Artists ({len(artist_tags)}): {', '.join(artist_tags)}")
+                        else:
+                            log.info("Artists: (none)")
+
                         # Create context with the full tag lists
                         context = ImageContext(
                             image_path=file_path,
@@ -1132,6 +1166,7 @@ Conflict resolution:
                             tags=tags,
                             original_tags=raw_sections,
                             character_tags=character_tags,
+                            artists=artist_tags,
                             rating=rating,
                         )
                         contexts.append(context)
