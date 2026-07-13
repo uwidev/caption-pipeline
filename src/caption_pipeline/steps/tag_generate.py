@@ -29,6 +29,7 @@ from caption_pipeline.utils.tokenizer import get_tokenizer
 ALWAYS_BLACKLIST: set[str] = {
     "virtual youtuber",
     "dual persona",
+    "ranguage",
 }
 
 # Constants (adjustable)

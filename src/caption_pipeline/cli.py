@@ -26,6 +26,8 @@ from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.tools import merge_tag_categories, validate_tag_categories
+from caption_pipeline.tools.tag_confidence import get_tag_confidences
+from caption_pipeline.utils.image_utils import find_images_in_directory
 from caption_pipeline.utils.logging_utils import configure_logging, log, section
 
 # Image MIME types supported
@@ -129,51 +131,6 @@ def is_image_file(file_path: Path) -> bool:
     return False
 
 
-def find_images_in_directory(
-    directory: Path,
-    recursive: bool = False,
-) -> list[Path]:
-    """
-    Find all image files in a directory using MIME type detection.
-
-    Args:
-        directory: Directory to search
-        recursive: Whether to search subdirectories
-        supported_mimes: Set of supported MIME types (uses default if None)
-
-    Returns:
-        List of image file paths
-    """
-    if not directory.exists():
-        log.error(f"Directory not found: {directory}")
-        return []
-
-    if not directory.is_dir():
-        # If it's a file, check if it's an image
-        if is_image_file(directory):
-            return [directory]
-        log.warning(f"Not a directory or image file: {directory}")
-        return []
-
-    log.info(f"Scanning directory: {directory}")
-
-    image_files: list[Path] = []
-
-    # Walk the directory
-    if recursive:
-        iterator = directory.rglob("*")
-    else:
-        iterator = directory.glob("*")
-
-    for file_path in iterator:
-        if file_path.is_file() and is_image_file(file_path):
-            image_files.append(file_path)
-
-    log.info(f"Found {len(image_files)} image files")
-
-    return image_files
-
-
 def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[str]]]:
     """
     Load existing caption file.
@@ -202,26 +159,35 @@ def load_existing_caption(image_path: Path) -> tuple[list[list[str]], list[list[
         return tag.lower().strip().replace(" ", "_")
 
     # Split on "|||" with optional whitespace around it
-    # This handles trailing delimiters and inconsistent spacing
     parts = re.split(r"\s*\|\|\|\s*", content)
 
-    # Remove any empty parts at the end (from trailing delimiters)
+    # Remove any empty trailing parts (from trailing delimiters)
     while parts and parts[-1] == "":
         parts.pop()
 
-    # If we have more than 3 parts, join the extra parts back into section 2
-    # (NL caption may contain the delimiter)
-    if len(parts) > 3:
-        parts = parts[:2] + [" ||| ".join(parts[2:])]
+    # Map to exactly 3 sections based on number of parts:
+    # - No delimiter (1 part) → section 1 (main tags)
+    # - One delimiter (2 parts) → section 0, section 1, section 2 empty
+    # - Two delimiters (3 parts) → sections 0,1,2
+    # - More than 3 → merge extras into section 2
+    if len(parts) == 1:
+        sections = ["", parts[0], ""]
+    elif len(parts) == 2:
+        sections = [parts[0], parts[1], ""]
+    elif len(parts) == 3:
+        sections = parts
+    else:
+        # More than 3: join the extra parts back into section 2
+        sections = parts[:2] + [" ||| ".join(parts[2:])]
 
-    # Ensure exactly 3 sections
-    while len(parts) < 3:
-        parts.append("")
+    # Ensure exactly 3 sections (should already be, but just in case)
+    while len(sections) < 3:
+        sections.append("")
 
     raw_sections = [[], [], []]
     processed_sections = [[], [], []]
 
-    for idx, section_text in enumerate(parts):
+    for idx, section_text in enumerate(sections):
         if idx == 2:  # NL section
             if section_text.strip():
                 raw_sections[2] = [section_text]
@@ -329,8 +295,8 @@ def find_character_hints(tags: list[str]) -> tuple[list[str], list[str]]:
         t = tag
         if t.startswith("character:"):
             # Extract the actual name
-            t = t.removeprefix("character:").strip() # strip to cover 'character: foo' case
-            if t: # covers empty character name 'character: '
+            t = t.removeprefix("character:").strip()  # strip to cover 'character: foo' case
+            if t:  # covers empty character name 'character: '
                 characters.append(t)
 
         cleaned_tags.append(t)
@@ -1005,6 +971,39 @@ Conflict resolution:
     )
     validate_parser.add_argument("--verbose", action="store_true", help="Show detailed output")
 
+    # Tag confidence tool
+    confidence_parser = tool_subparsers.add_parser(
+        "tag-confidence", help="Query PixAI confidence for a specific tag across all images"
+    )
+    confidence_parser.add_argument(
+        "--tag",
+        required=True,
+        help="Target tag to query (case-insensitive, spaces/underscores normalized)",
+    )
+    confidence_parser.add_argument(
+        "--input", required=True, help="Directory containing images to scan"
+    )
+    confidence_parser.add_argument(
+        "--output",
+        default="./tag_confidences.txt",
+        help="Output file for tag confidences (default: ./tag_confidences.txt)",
+    )
+    confidence_parser.add_argument(
+        "--paths",
+        default="./tag_images.txt",
+        help="Output file for caption file paths (default: ./tag_images.txt)"
+    )
+    confidence_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.01,
+        help="Inference threshold for tag detection (default: 0.01)",
+    )
+    confidence_parser.add_argument(
+        "--recursive", action="store_true", help="Search subdirectories recursively"
+    )
+    confidence_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+
     # Add --help-steps
     parser.add_argument(
         "--help-steps",
@@ -1206,6 +1205,19 @@ Conflict resolution:
                 file_path,
                 fix=args.fix,
                 verbose=args.verbose,
+            )
+            if not success:
+                sys.exit(1)
+
+        elif args.tool_command == "tag-confidence":
+            success = get_tag_confidences(
+                tag=args.tag,
+                input_dir=Path(args.input),
+                output_path=Path(args.output),
+                paths_path=Path(args.paths),
+                threshold=args.threshold,
+                recursive=args.recursive,
+                debug=args.debug,
             )
             if not success:
                 sys.exit(1)

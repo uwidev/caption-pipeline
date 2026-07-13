@@ -330,9 +330,9 @@ class FixOrderStep(PipelineStep):
         """
         Order as: artists → rating → count tags → character tags → everything else.
         """
-        rating = context.rating
-        chars = context.get_character_tags()
-        artists = context.get_artists()
+        rating = context.rating if context.rating in tags else None
+        chars = [char for char in context.get_character_tags() if char in tags]
+        artists = [artist for artist in context.get_artists() if artist in tags]
 
         # Separate count tags
         count_tags = [t for t in tags if is_count_tag(t)]
