@@ -1207,6 +1207,13 @@ Conflict resolution:
                         tags[1], chars1 = find_character_hints(tags[1] if len(tags) > 1 else [])
                         character_tags = list(set(chars0 + chars1))
 
+                        from caption_pipeline.utils.tag_db import load_character_tags_only, add_custom_character
+                        # Check for custom characters (explicitly prefixed but not in DB)
+                        character_db = load_character_tags_only()
+                        for character in character_tags:
+                            if character not in character_db:
+                                add_custom_character(character)
+
                         # Extract artist tags without modifying the lists
                         tags[0], artists0 = find_artist_hints(tags[0] if len(tags) > 0 else [])
                         tags[1], artists1 = find_artist_hints(tags[1] if len(tags) > 1 else [])

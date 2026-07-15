@@ -34,6 +34,7 @@ from caption_pipeline.utils.tag_db import (
     query_character,
     query_character_field,
     search_characters,
+    add_custom_character,
 )
 from caption_pipeline.utils.tag_patterns import PRE_CATEGORIZE_PATTERNS
 from caption_pipeline.utils.tag_utils import sort_key_by_object, sort_tags_by_object
@@ -80,4 +81,5 @@ __all__ = [
     # Tag utils
     "sort_key_by_object",
     "sort_tags_by_object",
+    "add_custom_character"
 ]

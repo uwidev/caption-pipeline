@@ -23,6 +23,8 @@ from caption_pipeline.utils.logging_utils import log
 _TAG_CACHE: dict[str, Any] = {}
 _CHARACTER_DATA: dict[str, dict[str, Any]] = {}
 
+CUSTOM_CHARACTERS_FILE = Path("./my_characters.txt")
+
 
 def load_tag_databases() -> tuple[list[str], list[str]]:
     """
@@ -367,15 +369,39 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     else:
         log.warning("No gelbooru_tags_*.jsonl files found")
 
+    # ============================================================
+    # Source 8: my_characters.txt (OPTIONAL)
+    # ============================================================
+    custom_path = Path("./my_characters.txt")
+    custom_tags = set()
+    if custom_path.exists():
+        try:
+            with custom_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    tag = line.strip()
+                    if tag:
+                        custom_tags.add(tag)
+            character_tags.update(custom_tags)
+            source_counts["my_characters.txt"] = {
+                "general": 0,
+                "series": 0,
+                "character": len(custom_tags),
+                "total": len(custom_tags),
+            }
+        except Exception as e:
+            log.warning(f"Failed to load my_characters.txt: {e}")
+    else:
+        log.debug("my_characters.txt not found, skipping")
+
     # Write tags to local database for use elsewhere
-    with Path("tags.txt").open('w') as fp_tags:
-        with Path("general_tags.txt").open('w') as fp_general:
-            payload = sorted([tag.replace("_", " ") + '\n' for tag in general_tags if tag])
+    with Path("tags.txt").open("w") as fp_tags:
+        with Path("general_tags.txt").open("w") as fp_general:
+            payload = sorted([tag.replace("_", " ") + "\n" for tag in general_tags if tag])
             fp_general.writelines(payload)
             fp_tags.writelines(payload)
 
-        with Path("character_list.txt").open('w') as fp_general:
-            payload = sorted([tag.replace("_", " ") + '\n' for tag in character_tags if tag])
+        with Path("character_list.txt").open("w") as fp_general:
+            payload = sorted([tag.replace("_", " ") + "\n" for tag in character_tags if tag])
             fp_general.writelines(payload)
             fp_tags.writelines(payload)
 
@@ -428,6 +454,31 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
 
     _TAG_CACHE[cache_key] = (general_list, character_list)
     return general_list, character_list
+
+
+def add_custom_character(tag: str) -> None:
+    """Add a custom character tag to my_characters.txt and refresh cache."""
+    # Normalize to lowercase with underscores, as per database standard
+    normalized = tag.lower().replace(" ", "_")
+    if not normalized:
+        return
+    # Ensure the file exists
+    CUSTOM_CHARACTERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Check if already present
+    existing = set()
+    if CUSTOM_CHARACTERS_FILE.exists():
+        with CUSTOM_CHARACTERS_FILE.open("r", encoding="utf-8") as f:
+            existing = set(line.strip() for line in f if line.strip())
+    if normalized in existing:
+        return
+    # Append to file
+    with CUSTOM_CHARACTERS_FILE.open("a", encoding="utf-8") as f:
+        f.write(normalized + "\n")
+    # Clear cache so next load will pick it up
+    cache_key = "tag_databases"
+    if cache_key in _TAG_CACHE:
+        del _TAG_CACHE[cache_key]
+    log.debug(f"Added custom character: {normalized}")
 
 
 def load_character_tags_only() -> set[str]:
