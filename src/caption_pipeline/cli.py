@@ -24,6 +24,7 @@ from caption_pipeline.steps.tag_artist import TagArtistStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
 from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
+from caption_pipeline.steps.tag_purge import TagPurgeStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
 from caption_pipeline.tools import merge_tag_categories, validate_tag_categories
@@ -329,6 +330,7 @@ def get_all_step_classes() -> list[type]:
         TagArtistStep,
         TagResolveStep,
         TagManipulateStep,
+        TagPurgeStep,
         TagNaturalLanguageStep,
         FormatJoinStep,
         FormatSectionStep,
@@ -449,6 +451,23 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         target_section=target_section,
                     )
                 )
+
+            case "tag:purge":
+                target_section = -1
+
+                i = 1
+                while i < len(parts):
+                    match parts[i]:
+                        case "--section":
+                            target_section = int(parts[i + 1])
+                            i += 2
+                        case _:
+                            raise ValueError(
+                                f"Unknown flag '{parts[i]}' for step '{step_name}'. "
+                                f"Available flags: --section"
+                            )
+
+                steps.append(TagPurgeStep(target_section=target_section))
 
             case "tag:generate" | "tag:gen":
                 threshold = 0.35
