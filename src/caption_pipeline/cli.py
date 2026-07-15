@@ -31,6 +31,12 @@ from caption_pipeline.tools import merge_tag_categories, validate_tag_categories
 from caption_pipeline.tools.tag_confidence import get_tag_confidences
 from caption_pipeline.utils.image_utils import find_images_in_directory
 from caption_pipeline.utils.logging_utils import configure_logging, log, section
+from caption_pipeline.utils.tag_db import (
+    add_custom_artist,
+    add_custom_character,
+    is_artist_tag,
+    load_character_tags_only,
+)
 
 # Image MIME types supported
 SUPPORTED_IMAGE_MIMES: set[str] = {
@@ -245,29 +251,55 @@ def find_rating(tags: list[str]) -> tuple[list[str], str | None]:
 
 def find_artist_hints(tags: list[str]) -> tuple[list[str], list[str]]:
     """
-    Find artist tags from a list of tags and cleanup marker.
+    Extract artist tags from a list of tags.
 
-    Artists are prefixed with a marker '@'.
-
-    Args:
-        tags: List of tags to process
+    - Tags starting with '@' are explicit artist hints.
+    - If ANY explicit hints exist, ONLY those are used (no database lookup for others).
+    - If no explicit hints, tags that match the artist database are treated as hints.
+    - All original tags are kept in the cleaned_tags list (including '@' markers).
+    - Unknown explicit artists are added to my_artists.txt for future recognition.
 
     Returns:
-        Tuple of (cleaned_tags, artists)
+        Tuple of (cleaned_tags, artist_names)
+        - cleaned_tags: original tags (with markers preserved)
+        - artist_names: list of artist names (without '@' prefix)
     """
-    artists: list[str] = []
+    explicit_artists: list[str] = []
     cleaned_tags: list[str] = []
+    has_explicit = False
 
+    # First pass: detect explicit @ hints and collect names
     for tag in tags:
         t = tag
         if tag.startswith("@"):
-            # Extract the actual name without @ prefix
+            has_explicit = True
             t = tag.removeprefix("@")
-            if t:  # edge case random empty marker tag '@'
-                artists.append(t)
-
+            if t:
+                explicit_artists.append(t)
+                # If this artist is not in the database, add to my_artists.txt
+                if not is_artist_tag(t):
+                    add_custom_artist(t)
+        # Always keep the original tag in cleaned_tags
         cleaned_tags.append(t)
 
+    # If we found explicit hints, we use only those as artists (no DB lookup)
+    if has_explicit:
+        # Deduplicate while preserving order
+        artists = []
+        seen = set()
+        for t in explicit_artists:
+            if t not in seen:
+                seen.add(t)
+                artists.append(t)
+        return cleaned_tags, artists
+
+    # Second pass: no explicit hints, check database for artist tags
+    artists = []
+    for tag in tags:
+        if is_artist_tag(tag):
+            artists.append(tag)
+
+    artists = list(dict.fromkeys(artists))
     return cleaned_tags, artists
 
 
@@ -309,8 +341,6 @@ def find_character_hints(tags: list[str]) -> tuple[list[str], list[str]]:
         return cleaned_tags, characters
 
     # Try 2: Check each tag if they are a character, just not prefixed
-    from caption_pipeline.utils.tag_db import load_character_tags_only
-
     character_tag_set = load_character_tags_only()
 
     for tag in tags:
@@ -1207,7 +1237,6 @@ Conflict resolution:
                         tags[1], chars1 = find_character_hints(tags[1] if len(tags) > 1 else [])
                         character_tags = list(set(chars0 + chars1))
 
-                        from caption_pipeline.utils.tag_db import load_character_tags_only, add_custom_character
                         # Check for custom characters (explicitly prefixed but not in DB)
                         character_db = load_character_tags_only()
                         for character in character_tags:

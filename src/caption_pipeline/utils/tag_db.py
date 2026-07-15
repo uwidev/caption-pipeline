@@ -22,8 +22,10 @@ from caption_pipeline.utils.logging_utils import log
 
 _TAG_CACHE: dict[str, Any] = {}
 _CHARACTER_DATA: dict[str, dict[str, Any]] = {}
+_ARTIST_DATA: set[str] | None = None
 
 CUSTOM_CHARACTERS_FILE = Path("./my_characters.txt")
+CUSTOM_ARTISTS_FILE = Path("./my_artists.txt")
 
 
 def load_tag_databases() -> tuple[list[str], list[str]]:
@@ -456,6 +458,34 @@ def load_tag_databases() -> tuple[list[str], list[str]]:
     return general_list, character_list
 
 
+def add_custom_artist(tag: str) -> None:
+    """Add a custom artist tag to my_artists.txt and refresh cache."""
+    normalized = tag.lower().replace(" ", "_")
+    if not normalized:
+        return
+    CUSTOM_ARTISTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Check if already present
+    existing = set()
+    if CUSTOM_ARTISTS_FILE.exists():
+        with CUSTOM_ARTISTS_FILE.open("r", encoding="utf-8") as f:
+            existing = set(line.strip() for line in f if line.strip())
+    if normalized in existing:
+        return
+    with CUSTOM_ARTISTS_FILE.open("a", encoding="utf-8") as f:
+        f.write(normalized + "\n")
+    # Clear artist cache so next load picks it up
+    global _ARTIST_DATA
+    _ARTIST_DATA = None
+    log.debug(f"Added custom artist: {normalized}")
+
+
+def is_artist_tag(tag: str) -> bool:
+    """Check if a tag is a known artist (case-insensitive, normalized)."""
+    artists = load_artist_tags_only()
+    norm = tag.lower().replace(" ", "_")
+    return norm in artists
+
+
 def add_custom_character(tag: str) -> None:
     """Add a custom character tag to my_characters.txt and refresh cache."""
     # Normalize to lowercase with underscores, as per database standard
@@ -501,6 +531,60 @@ def load_general_tags_only() -> set[str]:
     """
     general_tags, _ = load_tag_databases()
     return set(general_tags)
+
+
+def load_artist_tags_only() -> set[str]:
+    """Load artist tags from artist_class_mapping.csv and my_artists.txt, and cache."""
+    global _ARTIST_DATA
+    if _ARTIST_DATA is not None:
+        return _ARTIST_DATA
+
+    artists = set()
+    # Load from artist_class_mapping.csv
+    csv_path = Path("./artist_class_mapping.csv")
+    if csv_path.exists():
+        import csv
+
+        try:
+            with csv_path.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    class_name = row.get("class_name", "").strip()
+                    if class_name:
+                        artists.add(class_name.lower().replace(" ", "_"))
+            log.info(f"Loaded {len(artists)} artist names from {csv_path}")
+        except Exception as e:
+            log.warning(f"Failed to load artist_class_mapping.csv: {e}")
+    else:
+        log.warning("artist_class_mapping.csv not found")
+
+    # Load from my_artists.txt
+    custom_path = CUSTOM_ARTISTS_FILE
+    custom_count = 0
+    if custom_path.exists():
+        try:
+            with custom_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    tag = line.strip()
+                    if tag:
+                        artists.add(tag.lower().replace(" ", "_"))
+                        custom_count += 1
+            if custom_count:
+                log.info(f"Loaded {custom_count} custom artists from {custom_path}")
+        except Exception as e:
+            log.warning(f"Failed to load my_artists.txt: {e}")
+    else:
+        log.debug("my_artists.txt not found, skipping")
+
+    _ARTIST_DATA = artists
+    return artists
+
+
+def is_artist_tag(tag: str) -> bool:
+    """Check if a tag is a known artist (case-insensitive, normalized)."""
+    artists = load_artist_tags_only()
+    norm = tag.lower().replace(" ", "_")
+    return norm in artists
 
 
 def get_cached_tags() -> tuple[list[str], list[str]] | None:
