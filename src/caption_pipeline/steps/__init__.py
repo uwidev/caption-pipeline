@@ -16,12 +16,14 @@ from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
 from caption_pipeline.steps.fix_natural_language import FixNaturalLanguageStep
 from caption_pipeline.steps.tag_resolve import TagResolveStep
 from caption_pipeline.steps.validate_characters import CharacterValidationStep
+from caption_pipeline.steps.tag_artist import TagArtistStep
 
 __all__ = [
     "BaseFormatStep",
     "FormatJoinStep",
     "FormatSectionStep",
     "TagGenerationStep",
+    "TagArtistStep",
     "TagResolveStep",
     "TagManipulateStep",
     "TagNaturalLanguageStep",

@@ -1,4 +1,4 @@
-"""
+"""cli
 Command-line interface for the caption pipeline.
 """
 
@@ -20,6 +20,7 @@ from caption_pipeline.steps.fix_order import FixOrderStep
 from caption_pipeline.steps.fix_overlap import FixOverlapStep
 from caption_pipeline.steps.format_join import FormatJoinStep
 from caption_pipeline.steps.format_section import FormatSectionStep
+from caption_pipeline.steps.tag_artist import TagArtistStep
 from caption_pipeline.steps.tag_generate import TagGenerationStep
 from caption_pipeline.steps.tag_manipulate import TagManipulateStep
 from caption_pipeline.steps.tag_natural_language import TagNaturalLanguageStep
@@ -325,6 +326,7 @@ def get_all_step_classes() -> list[type]:
     """Get all step classes with help metadata."""
     return [
         TagGenerationStep,
+        TagArtistStep,
         TagResolveStep,
         TagManipulateStep,
         TagNaturalLanguageStep,
@@ -456,6 +458,11 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                 infer_characters = False
                 unload_models = True
                 use_hints = True
+                model_id = "at-convnextv2-huge-dbv4-full"
+                model_source = None
+                use_tlt = True
+                tlt_offset = 0.0
+                tlt_fallback = 0.35
 
                 i = 1
                 while i < len(parts):
@@ -483,6 +490,21 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         case "--no-use-hints":
                             use_hints = False
                             i += 1
+                        case "--model":
+                            model_id = parts[i + 1]
+                            i += 2
+                        case "--source":
+                            model_source = parts[i + 1]
+                            i += 2
+                        case "--no-tlt":
+                            use_tlt = False
+                            i += 1
+                        case "--tlt-offset":
+                            tlt_offset = float(parts[i + 1])
+                            i += 2
+                        case "--tlt-fallback":
+                            tlt_fallback = float(parts[i + 1])
+                            i += 2
                         case _:
                             raise ValueError(
                                 f"Unknown flag '{parts[i]}' for step '{step_name}'. "
@@ -500,6 +522,42 @@ def parse_steps(args: argparse.Namespace) -> list[PipelineStep]:
                         infer_characters=infer_characters,
                         unload_models_after_batch=unload_models,
                         use_user_hints=use_hints,
+                        model_id=model_id,
+                        model_source=model_source,
+                        use_tag_level_thresholds=use_tlt,
+                        tag_level_threshold_offset=tlt_offset,
+                        tag_level_threshold_fallback=tlt_fallback,
+                    )
+                )
+
+            case "tag:artist":
+                threshold = 0.1
+                top_k = 3
+                device = "auto"
+
+                i = 1
+                while i < len(parts):
+                    match parts[i]:
+                        case "--threshold":
+                            threshold = float(parts[i + 1])
+                            i += 2
+                        case "--top-k":
+                            top_k = int(parts[i + 1])
+                            i += 2
+                        case "--device":
+                            device = parts[i + 1]
+                            i += 2
+                        case _:
+                            raise ValueError(
+                                f"Unknown flag '{parts[i]}' for step '{step_name}'. "
+                                f"Available flags: --threshold, --top-k, --device"
+                            )
+
+                steps.append(
+                    TagArtistStep(
+                        threshold=threshold,
+                        top_k=top_k,
+                        device=device,
                     )
                 )
 
@@ -991,7 +1049,7 @@ Conflict resolution:
     confidence_parser.add_argument(
         "--paths",
         default="./tag_images.txt",
-        help="Output file for caption file paths (default: ./tag_images.txt)"
+        help="Output file for caption file paths (default: ./tag_images.txt)",
     )
     confidence_parser.add_argument(
         "--threshold",

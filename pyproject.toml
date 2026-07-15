@@ -7,12 +7,12 @@ authors = [
     {name = "Blong Yang", email = "yang.blongt@gmail.com"}
 ]
 license = "MIT"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "Pillow>=10.0.0",
     "numpy>=1.24.0",
     "opencv-python>=4.8.0",
-    "transformers>=4.30.0",
+    "transformers>=5.0",
     "torch>=2.0.0",
     "dghs-imgutils>=0.19.0",
     "loguru>=0.7.0",
@@ -23,6 +23,9 @@ dependencies = [
     "onnxruntime-gpu>=1.20.2",
     "python-magic>=0.4.27",
     "psutil>=7.2.2",
+    "vibe @ git+https://github.com/DraconicDragon/vibe",
+    "timm>=1.0.28",
+    "einops>=0.8.2",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +55,10 @@ include = [
     "/README.md",
     "/pyproject.toml",
 ]
+
+[tool.hatch.metadata]
+# allow direct repo to vibe
+allow-direct-references = true
 
 [tool.black]
 line-length = 100

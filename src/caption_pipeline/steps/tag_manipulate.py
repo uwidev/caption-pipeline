@@ -77,7 +77,8 @@ class TagManipulateStep(PipelineStep):
                             -1 = end, 0 = beginning, >0 = specific index
         """
         self.operation = operation
-        self.tags = tags
+        # tags on cli are only split and strip, need to normalized to space
+        self.tags = [tag.replace('_', " ") for tag in tags]
         self.section = target_section
         self.remove_duplicates = remove_duplicates
         self.target_position = target_position

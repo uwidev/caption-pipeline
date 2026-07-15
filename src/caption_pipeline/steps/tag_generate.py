@@ -1,14 +1,12 @@
-"""
-TagGenerationStep: Generate tags using AI models with user hints.
-"""
+# src/caption_pipeline/steps/tag_generate.py
 
-import gc
-import re
+from pathlib import Path
 from typing import Any, ClassVar
 
 import torch
+import vibe
 from PIL import Image
-from transformers import PreTrainedTokenizerBase
+from vibe.result_processors import CleanTags, ScoreThresholds, TagLevelThresholds
 
 from caption_pipeline.core.context import ImageContext
 from caption_pipeline.core.help import step_help
@@ -32,26 +30,39 @@ ALWAYS_BLACKLIST: set[str] = {
     "ranguage",
 }
 
-# Constants (adjustable)
-USER_TAG_PENALTY_MAX = 0.90  # Minimum penalty (least aggressive)
-USER_TAG_PENALTY_MIN = 0.55  # Maximum penalty (most aggressive)
-USER_TAG_SATURATION = 15  # Number of user tags before max penalty is applied
+# Constants for user tag penalty
+USER_TAG_PENALTY_MAX = 0.90
+USER_TAG_PENALTY_MIN = 0.55
+USER_TAG_SATURATION = 15
 
 
 @step_help(
     name="tag:generate",
-    description="Generate AI tags from images using WD14 and PixAI.",
-    long_description="""This step runs AI inference using WD14 (EVA02_Large) and PixAI (v0.9)
-models to generate danbooru-style tags. It merges user-provided hints with AI
-results, detects character tags, and applies filters.
+    description="Generate AI tags from images using vibe (AnimeTimm CaFormer).",
+    long_description="""This step runs AI inference using the vibe library with an AnimeTimm model
+(default: at-caformer-b36-dbv4-full) to generate Danbooru-style tags.
+It merges user-provided hints with AI results, detects character tags, and applies filters.
 
 IMPORTANT: If the user provides character tags in the grounding/hints, those
 take precedence over AI-inferenced character tags. The step will NOT use
-AI-inferenced characters if any user-provided characters exist.""",
+AI-inferenced characters if any user-provided characters exist.
+
+The model can be changed via --model and a local folder via --source.""",
     options=[
         {"flag": "--threshold FLOAT", "help": "Confidence threshold for tags", "default": "0.35"},
+        {
+            "flag": "--character-threshold FLOAT",
+            "help": "Threshold for character tags",
+            "default": "0.75",
+        },
         {"flag": "--whitelist TAG,TAG,...", "help": "Tags to always keep (overrides all filters)"},
         {"flag": "--blacklist TAG,TAG,...", "help": "Tags to always remove"},
+        {
+            "flag": "--model ID",
+            "help": "Vibe model ID (e.g., at-caformer-b36-dbv4-full)",
+            "default": "at-caformer-b36-dbv4-full",
+        },
+        {"flag": "--source PATH", "help": "Local folder or HF repo for model files"},
         {"flag": "--no-infer-characters", "help": "Don't infer character names from AI"},
         {
             "flag": "--no-unload-models",
@@ -60,11 +71,11 @@ AI-inferenced characters if any user-provided characters exist.""",
         },
         {"flag": "--no-use-hints", "help": "Ignore user-provided tags", "default": "use hints"},
     ],
-    example="tag:generate --threshold 0.35 --whitelist '1girl, original' --no-infer-characters",
+    example="tag:generate --threshold 0.35 --model at-caformer-b36-dbv4-full --source local:/path/to/model",
 )
 class TagGenerationStep(PipelineStep):
     """
-    Generate tags from images using AI models with user hints.
+    Generate tags from images using vibe with AnimeTimm models.
 
     Character handling priority:
     1. User-provided character tags (from grounding/hints) → ALWAYS used
@@ -74,9 +85,9 @@ class TagGenerationStep(PipelineStep):
     # Class-level caches for shared resources
     _general_tags: ClassVar[set[str] | None] = None
     _character_tags: ClassVar[set[str] | None] = None
-    _tokenizer: ClassVar[PreTrainedTokenizerBase | None] = None
-    _models_loaded: ClassVar[bool] = False
-    _model_instances: ClassVar[dict[str, Any]] = {}
+    _tokenizer: ClassVar[Any] = None
+    _vibe_session: ClassVar[Any] = None  # shared session across batch
+    _session_refcount: ClassVar[int] = 0
 
     def __init__(
         self,
@@ -93,6 +104,11 @@ class TagGenerationStep(PipelineStep):
         user_tag_penalty_min: float = USER_TAG_PENALTY_MIN,
         user_tag_penalty_max: float = USER_TAG_PENALTY_MAX,
         user_tag_saturation: int = USER_TAG_SATURATION,
+        model_id: str = "at-caformer-b36-dbv4-full",
+        model_source: str | None = None,
+        use_tag_level_thresholds: bool = True,
+        tag_level_threshold_offset: float = 0.0,
+        tag_level_threshold_fallback: float | None = None,
     ) -> None:
         self.threshold: float = threshold
         self.character_threshold: float = character_threshold
@@ -107,6 +123,14 @@ class TagGenerationStep(PipelineStep):
         self.user_tag_penalty_min: float = user_tag_penalty_min
         self.user_tag_penalty_max: float = user_tag_penalty_max
         self.user_tag_saturation: int = user_tag_saturation
+        self.use_tag_level_thresholds: bool = use_tag_level_thresholds
+        self.tag_level_threshold_offset: float = tag_level_threshold_offset
+        self.tag_level_threshold_fallback: float | None = tag_level_threshold_fallback
+
+        # Vibe model configuration
+        self.model_id: str = model_id
+        self.model_source: str | None = model_source
+        self._session: Any = None  # per‑batch session, if not using class cache
 
     def name(self) -> str:
         return "tag:generate"
@@ -118,14 +142,14 @@ class TagGenerationStep(PipelineStep):
         """Generate tags for the image."""
         with section(f"Processing: {context.image_path.name}"):
             self._load_databases()
-            self._load_models()
+            self._ensure_vibe_session()
 
             image: Image.Image = context.load_image()
 
-            # Run AI inference
-            ai_tags, ai_rating, ai_characters = self._run_inference(image)
+            # Run AI inference via vibe
+            ai_tags, ai_rating, ai_characters = self._run_vibe_inference(image)
 
-            user_tags = context.get_tags(0) + context.get_tags(1)
+            user_tags = context.get_tags(1)
             user_characters = context.get_character_tags()
             user_rating = context.rating
 
@@ -139,15 +163,12 @@ class TagGenerationStep(PipelineStep):
             if user_tags:
                 log_list_truncated(user_tags, "User tags", level="debug")
 
-            # Log user rating at DEBUG level
             if user_rating:
                 log.debug(f"User rating: {user_rating}")
 
-            # Log AI inference results at DEBUG level
             log.debug(f"AI inference results ({len(ai_tags)} total tags):")
             sorted_ai = sorted(ai_tags.items(), key=lambda x: -x[1])
 
-            # Show ALL tags above threshold
             above_threshold = [(tag, conf) for tag, conf in sorted_ai if conf >= self.threshold]
             below_threshold = [(tag, conf) for tag, conf in sorted_ai if conf < self.threshold]
 
@@ -156,7 +177,6 @@ class TagGenerationStep(PipelineStep):
             else:
                 log.debug(f"No tags above threshold ({self.threshold})")
 
-            # Show tags near threshold (within 0.1) + up to 10 more
             if below_threshold:
                 near_threshold = [
                     (tag, conf) for tag, conf in below_threshold if conf >= self.threshold - 0.1
@@ -165,20 +185,15 @@ class TagGenerationStep(PipelineStep):
                     log_scored_list_truncated(near_threshold[:10], "Tags near threshold")
                     if len(near_threshold) > 10:
                         log.debug(f"... and {len(near_threshold) - 10} more near threshold")
-
                 else:
-                    # If no tags near threshold, show the highest below threshold
                     highest_below = below_threshold[:5]
                     log_scored_list_truncated(highest_below, "Highest below threshold")
 
-            # Log AI rating at DEBUG level
             if ai_rating:
                 log.debug(f"AI rating: {ai_rating}")
 
-            # Log ALL AI character results at DEBUG level (no filtering)
             if ai_characters:
                 sorted_chars = sorted(ai_characters.items(), key=lambda x: -x[1])
-                # Format with markers
                 formatted = [
                     f"{char}: {conf:.3f} {'✓' if conf >= self.character_threshold else ' '}"
                     for char, conf in sorted_chars
@@ -187,7 +202,6 @@ class TagGenerationStep(PipelineStep):
                     formatted, "AI-inferenced characters", max_items=10, level="debug"
                 )
 
-            # Combine general tags (using regular threshold)
             combined_general = self._combine_tags(
                 user_tags=user_tags,
                 ai_tags=ai_tags,
@@ -195,7 +209,6 @@ class TagGenerationStep(PipelineStep):
 
             expected_count = get_character_count_from_tag_confidences(combined_general)
 
-            # Check if we have enough AI characters (if AI character detection is allowed)
             if self.infer_characters and expected_count > 0:
                 user_count = len(user_characters)
                 ai_count = len(accepted_ai_characters)
@@ -220,34 +233,25 @@ class TagGenerationStep(PipelineStep):
                 threshold=self.character_threshold,
             )
 
-            # Apply filters (blacklist/whitelist/danbooru_only)
             final_tags = self._apply_filters(combined_general)
 
-            # === Show deltas: What changed ===
+            # --- Deltas logging ---
             original_tag_count = len(user_tags)
             final_tag_count = len(final_tags)
 
-            # Tags that were added by AI (in final but not in user hints)
             user_tag_set = set(user_tags)
             added_by_ai = [t for t in final_tags if t not in user_tag_set]
-
-            # Tags that were removed (in user hints but not in final)
             removed = [t for t in user_tags if t not in final_tags]
-
-            # Tags that were kept (in both user hints and final)
             kept = [t for t in final_tags if t in user_tag_set]
 
-            # Characters added/kept
             final_char_tags = resolved_characters
             user_char_set = set(user_characters)
 
             kept_chars = [c for c in final_char_tags if c in user_char_set]
             added_chars = [c for c in final_char_tags if c not in user_char_set]
 
-            # Show summary at INFO level
             log.info(f"{original_tag_count} user tags → {final_tag_count} final tags")
 
-            # Log rating delta if applicable
             if user_rating and ai_rating:
                 if user_rating == ai_rating:
                     log.info(f"Rating: {user_rating} (user and AI match)")
@@ -262,19 +266,14 @@ class TagGenerationStep(PipelineStep):
 
             if kept:
                 log_list_truncated(kept, "Kept")
-
             if added_by_ai:
                 log_list_truncated(added_by_ai, "Added by AI")
-
             if removed:
                 log_list_truncated(removed, "Removed by AI")
-
             if kept_chars:
                 log_list_truncated(kept_chars, "Kept characters")
-
             if added_chars:
                 log_list_truncated(added_chars, "Characters added")
-
             if final_tags:
                 log_list_truncated(final_tags, "Final tags")
 
@@ -284,7 +283,6 @@ class TagGenerationStep(PipelineStep):
             result.set_tags(list(final_tags), section=1)
             result.set_characters(resolved_characters)
 
-            # Determine final rating: user rating takes precedence
             if user_rating:
                 result.rating = user_rating
             elif ai_rating:
@@ -300,7 +298,7 @@ class TagGenerationStep(PipelineStep):
             return contexts
 
         self._load_databases()
-        self._load_models()
+        self._ensure_vibe_session()
 
         valid_indices: list[int] = []
         for idx, context in enumerate(contexts):
@@ -335,182 +333,222 @@ class TagGenerationStep(PipelineStep):
             contexts[idx] = processed_contexts[pos]
 
         if self.unload_models_after_batch:
-            self._unload_models()
+            self._unload_vibe_session()
 
         return contexts
 
     # =========================================================================
-    # Model Loading
+    # Vibe Session Management (replaces imgutils model loading)
     # =========================================================================
 
-    @classmethod
-    def _load_models(cls) -> None:
-        if cls._models_loaded:
+    def _ensure_vibe_session(self) -> None:
+        """Load the vibe session if not already loaded."""
+        if self._session is not None:
+            return
+        self._load_vibe_session()
+
+    def _load_vibe_session(self) -> None:
+        """Load vibe session for this batch."""
+        if self._session is not None:
             return
 
-        log.info("Loading tag generation models...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        log.info(f"Loading vibe model '{self.model_id}' on {device}...")
 
         try:
-            # This import triggers model loading
-            from imgutils.generic.classify import ClassifyModel
-            from imgutils.generic.yolo import YOLOModel
-            from imgutils.tagging import pixai, wd14
-
-            # Force model loading by creating dummy prediction
-            wd_model = ClassifyModel("wd14")
-            cls._model_instances["wd14"] = wd_model
-
-            pixai_model = YOLOModel("pixai")
-            cls._model_instances["pixai"] = pixai_model
-
-            # Create a dummy image to trigger model loading
-            dummy = Image.new("RGB", (224, 224), color="white")
-
-            # Load WD14 model
-            wd14.get_wd14_tags(
-                dummy,
-                "EVA02_Large",
-                no_underline=True,
-                general_threshold=0.1,
+            self._session = vibe.load(
+                self.model_id,
+                source=self.model_source,
+                device=device,
+                precision="fp16" if device == "cuda" else "fp32",
+                auto_download=True,
             )
-
-            # Load PixAI model
-            pixai.get_pixai_tags(
-                dummy,
-                "v0.9",
-                thresholds={"general": 0.1, "character": 0.1},
-            )
-
-            cls._models_loaded = True
-            log.info("Tag generation models loaded")
-
+            log.info(f"Vibe model '{self.model_id}' loaded successfully.")
         except Exception as e:
-            log.warning(f"Failed to load models: {e}")
-            # Mark as loaded anyway to prevent repeated attempts
-            cls._models_loaded = True
+            log.error(f"Failed to load vibe model: {e}")
+            raise
 
-    @classmethod
-    def _unload_models(cls) -> None:
-        """Properly unload all imgutils models and clear caches."""
-        if not cls._models_loaded:
-            return
-
-        log.info("Unloading tag generation models...")
-
-        try:
-            # 1. Clear model instances from our internal cache
-            for model_name, model_instance in cls._model_instances.items():
-                if hasattr(model_instance, "clear"):
-                    try:
-                        model_instance.clear()
-                    except Exception as e:
-                        log.warning(f"Failed to clear {model_name}: {e}")
-
-            # 2. Clear all imgutils model caches
-            cls._clear_imgutils_caches()
-
-            # 3. Force garbage collection
-            gc.collect()
-
-            # 4. Clear CUDA cache if available
+    def _unload_vibe_session(self) -> None:
+        """Unload vibe session and clean up."""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
             if torch.cuda.is_available():
-                # Synchronize first
-                torch.cuda.synchronize()
-
-                # Empty cache
                 torch.cuda.empty_cache()
+            log.debug("Vibe session closed and CUDA cache cleared.")
 
-                # Reset peak memory stats
-                try:
-                    torch.cuda.reset_peak_memory_stats()
-                except Exception:
-                    pass
+    # =========================================================================
+    # AI Inference using Vibe
+    # =========================================================================
 
-                # Log memory state at DEBUG level
-                allocated = torch.cuda.memory_allocated() / 1024 / 1024
-                cached = torch.cuda.memory_reserved() / 1024 / 1024
-                if allocated > 0 or cached > 0:
-                    log.debug(
-                        f"CUDA memory after cleanup: {allocated:.2f}MB allocated, {cached:.2f}MB cached"
-                    )
-                else:
-                    log.debug("CUDA memory fully released")
+    def _run_vibe_inference(
+        self,
+        image: Image.Image,
+        context_name: str | None = None,
+    ) -> tuple[dict[str, float], str | None, dict[str, float]]:
+        """Run inference using vibe with Tag-Level Thresholds."""
+        if self._session is None:
+            raise RuntimeError("Vibe session not loaded.")
 
-                # Force another GC pass after CUDA cleanup
-                gc.collect()
-
-            # 5. Clear our internal state
-            cls._model_instances.clear()
-            cls._models_loaded = False
-
-            log.info("Tag generation models unloaded")
-
+        # --- Step 1: Run inference once ---
+        try:
+            raw_result = self._session.infer(image).first()
         except Exception as e:
-            log.warning(f"Failed to unload models: {e}")
-            cls._models_loaded = False
+            log.error(f"Vibe inference failed: {e}")
+            return {}, None, {}
 
-    @classmethod
-    def _clear_imgutils_caches(cls) -> None:
-        """Clear all imgutils cached functions."""
-        import inspect
-        import sys
+        # --- Step 2: Get threshold map for the model ---
+        threshold_map = self._get_threshold_map()
 
-        cleared = 0
+        # --- Step 3: Log raw scores with thresholds ---
+        context_label = f" for {context_name}" if context_name else ""
 
-        # Functions that we know are cached and used by our models
-        known_cached_funcs = [
-            # WD14
-            ("imgutils.tagging.wd14", "_get_wd14_model"),
-            ("imgutils.tagging.wd14", "_get_wd14_weights"),
-            ("imgutils.tagging.wd14", "_get_wd14_labels"),
-            # PixAI
-            ("imgutils.tagging.pixai", "_open_onnx_model"),
-            ("imgutils.tagging.pixai", "_open_tags"),
-            ("imgutils.tagging.pixai", "_open_preprocess"),
-            ("imgutils.tagging.pixai", "_open_default_category_thresholds"),
-            # YOLO
-            ("imgutils.generic.yolo", "_open_models_for_repo_id"),
-            # Classify
-            ("imgutils.generic.classify", "_open_models_for_repo_id"),
-            # Booru YOLO
-            ("imgutils.detect.booru_yolo", "_open_models_for_repo_id"),
-            # Person detect
-            ("imgutils.detect.person", "_open_models_for_repo_id"),
-        ]
+        # Collect and sort all tags by score
+        all_tags = []
+        for category, entries in raw_result.tags.items():
+            for entry in entries:
+                all_tags.append((category, entry.tag, entry.score))
 
-        for module_name, func_name in known_cached_funcs:
-            try:
-                # Import the module
-                __import__(module_name)
-                module = sys.modules[module_name]
+        all_tags.sort(key=lambda x: x[2], reverse=True)
 
-                # Get the function
-                if hasattr(module, func_name):
-                    func = getattr(module, func_name)
-                    if hasattr(func, "cache_clear") and callable(func.cache_clear):
-                        func.cache_clear()
-                        cleared += 1
-            except Exception:
-                pass
+        # Format tags with alternating dot padding for visual readability
+        formatted_tags = []
+        for idx, (_, tag, score) in enumerate(all_tags[:50]):  # Only format top 50
+            threshold = threshold_map.get(tag)
 
-        # Also try to find any other cached functions in imgutils modules
-        for module_name, module in list(sys.modules.items()):
-            if not module_name.startswith("imgutils"):
-                continue
+            # Alternate: even indices (0, 2, 4...) get dots, odd indices (1, 3, 5...) get spaces
+            if idx % 2 == 0:
+                padded_tag = tag.ljust(40, ".")
+            else:
+                padded_tag = f"{tag:<40}"
 
-            for name, obj in inspect.getmembers(module):
-                # Check if this is a cached function
-                if hasattr(obj, "cache_clear") and callable(obj.cache_clear):
-                    try:
-                        # Check if it was decorated with ts_lru_cache
-                        # The decorator adds a __wrapped__ attribute
-                        if hasattr(obj, "__wrapped__"):
-                            obj.cache_clear()
-                            cleared += 1
-                    except Exception:
-                        pass
+            if threshold is not None:
+                status = "✓" if score >= threshold else "✗"
+                formatted_tags.append(
+                    f"{padded_tag}score={score:.3f} | threshold={threshold:.3f} [{status}]"
+                )
+            else:
+                formatted_tags.append(f"{padded_tag}score={score:.3f} | threshold=N/A [?]")
 
-        log.debug(f"Cleared {cleared} imgutils caches")
+        # Log with truncation - show up to 10 tags
+        log_list_truncated(
+            items=formatted_tags,
+            message=f"Raw tags with thresholds{context_label}",
+            max_items=10,
+        )
+
+        total_raw = len(all_tags)
+
+        if total_raw: # debug print for previous log_list_truncated to indicate more
+            log.debug('     ...')
+
+        # --- Step 4: Apply processors (TLT or global threshold + CleanTags) ---
+        processors = []
+
+        if self.use_tag_level_thresholds:
+            tlt_kwargs = {}
+            if self.tag_level_threshold_offset != 0.0:
+                tlt_kwargs["threshold_relative_offset"] = self.tag_level_threshold_offset
+            if self.tag_level_threshold_fallback is not None:
+                tlt_kwargs["threshold_fallback"] = self.tag_level_threshold_fallback
+            processors.append(TagLevelThresholds(**tlt_kwargs))
+        else:
+            processors.append(ScoreThresholds(threshold=self.threshold))
+
+        processors.append(CleanTags())
+
+        try:
+            filtered_result = self._session.infer(image, result_processors=processors).first()
+        except Exception as e:
+            log.error(f"Failed to apply thresholds: {e}")
+            return {}, None, {}
+
+        # --- Step 5: Log summary of filtering ---
+        total_filtered = sum(len(entries) for entries in filtered_result.tags.values())
+        dropped = total_raw - total_filtered
+
+        log.debug(
+            f"Threshold summary{context_label}: "
+            f"{total_raw} raw tags → {total_filtered} kept ({dropped} dropped)"
+        )
+
+        # --- Step 6: Extract results ---
+        rating_entries = filtered_result.tags.get("rating", [])
+        rating = None
+        if rating_entries:
+            best = max(rating_entries, key=lambda e: e.score)
+            rating = best.tag
+
+        general_tags = {entry.tag: entry.score for entry in filtered_result.tags.get("general", [])}
+        character_tags = {
+            entry.tag: entry.score for entry in filtered_result.tags.get("character", [])
+        }
+
+        return general_tags, rating, character_tags
+
+    def _find_selected_tags_csv(self) -> Path | None:
+        """Find the selected_tags.csv file for the current model."""
+        if self._session is None:
+            return None
+
+        # The session stores the file_map
+        if hasattr(self._session, "_file_map"):
+            file_map = self._session._file_map
+            if hasattr(file_map, "as_path_dict"):
+                paths = file_map.as_path_dict()
+                for key, path in paths.items():
+                    if "selected_tags" in key or (isinstance(key, str) and key.endswith(".csv")):
+                        return path
+        return None
+
+    def _get_threshold_map(self) -> dict[str, float]:
+        """Extract the threshold map from the vibe session or cache."""
+        if not self.use_tag_level_thresholds:
+            return {}
+
+        # Check if we already cached the threshold map
+        if hasattr(self, "_threshold_map_cache"):
+            return self._threshold_map_cache
+
+        # Try to get it from the session's file_map
+        threshold_map = {}
+        if self._session is not None:
+            # Access the file_map from the session
+            if hasattr(self._session, "_file_map"):
+                file_map = self._session._file_map
+                if hasattr(file_map, "as_path_dict"):
+                    paths = file_map.as_path_dict()
+                    for key, path in paths.items():
+                        if "selected_tags" in key or (
+                            isinstance(key, str) and key.endswith(".csv")
+                        ):
+                            threshold_map = self._parse_threshold_csv(path)
+                            break
+
+        # Cache it for future use
+        self._threshold_map_cache = threshold_map
+        return threshold_map
+
+    def _parse_threshold_csv(self, csv_path: Path) -> dict[str, float]:
+        """Parse selected_tags.csv and extract tag->threshold mapping."""
+        import csv
+
+        threshold_map = {}
+        try:
+            with csv_path.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    tag = row.get("name", "").strip()
+                    threshold_str = row.get("best_threshold", "").strip()
+                    if tag and threshold_str:
+                        try:
+                            threshold_map[tag] = float(threshold_str)
+                        except ValueError:
+                            pass
+        except Exception as e:
+            log.warning(f"Failed to parse threshold CSV: {e}")
+
+        return threshold_map
 
     # =========================================================================
     # Database Loading
@@ -521,8 +559,6 @@ class TagGenerationStep(PipelineStep):
         if cls._general_tags is not None:
             return
 
-        general_tags: list[str]
-        character_tags: list[str]
         general_tags, character_tags = load_tag_databases()
         cls._general_tags = set(general_tags)
         cls._character_tags = set(character_tags)
@@ -531,77 +567,7 @@ class TagGenerationStep(PipelineStep):
             cls._tokenizer = get_tokenizer()
 
     # =========================================================================
-    # AI Inference
-    # =========================================================================
-
-    def _run_inference(
-        self,
-        image: Image.Image,
-    ) -> tuple[dict[str, float], str | None, dict[str, float]]:
-        from imgutils.tagging import pixai, wd14
-
-        low_threshold = 0.01
-
-        # WD14 returns: (ratings_dict, general_tags_dict, character_tags_dict)
-        wd_ratings: dict[str, float]
-        wd_general: dict[str, float]
-        wd_ratings, wd_general, _ = wd14.get_wd14_tags(
-            image,
-            "EVA02_Large",
-            no_underline=True,
-            general_threshold=low_threshold,
-        )
-
-        # Extract the highest confidence rating from the ratings dict
-        rating: str | None = None
-        if wd_ratings:
-            rating_order = ["safe", "questionable", "explicit", "general", "sensitive"]
-            best_rating = None
-            best_conf = -1.0
-            for r in rating_order:
-                conf = wd_ratings.get(r, 0.0)
-                if conf > best_conf:
-                    best_rating = r
-                    best_conf = conf
-            rating = best_rating
-
-            # log.debug(f"Extracted rating: {rating} (from {wd_ratings})")
-
-        pixai_general: dict[str, float]
-        pixai_characters: dict[str, float]
-        pixai_general, pixai_characters = pixai.get_pixai_tags(
-            image,
-            "v0.9",
-            thresholds={
-                "general": low_threshold,
-                "character": 0.1,
-            },
-        )
-
-        pixai_general = {self._normalize_tag(k): v for k, v in pixai_general.items()}
-        pixai_characters = {self._normalize_tag(k): v for k, v in pixai_characters.items()}
-
-        combined: dict[str, float] = {}
-        for tag, conf in wd_general.items():
-            combined[tag] = conf
-
-        for tag, conf in pixai_general.items():
-            combined[tag] = max(combined.get(tag, 0), conf)
-
-        # If WD14 didn't give a rating, try PixAI
-        if not rating and pixai_general:
-            for tag in ["general", "safe", "questionable", "explicit"]:
-                if tag in pixai_general:
-                    rating = tag
-                    break
-
-        return combined, rating, pixai_characters
-
-    def _normalize_tag(self, tag: str) -> str:
-        return tag.replace("_", " ")
-
-    # =========================================================================
-    # Tag Combination
+    # Tag Combination and Filtering
     # =========================================================================
 
     def _combine_tags(
@@ -610,26 +576,19 @@ class TagGenerationStep(PipelineStep):
         ai_tags: dict[str, float],
     ) -> dict[str, float]:
         """
-        Combine user tags and AI tags into a single set above threshold.
+        Combine user and AI tags.
 
-        Args:
-            user_tags: User-provided tags (already normalized)
-            ai_tags: AI-inferenced general tags
-
-        Returns:
-            Tuple of combined_general_tags
+        AI tags are already filtered by TLT (or global threshold) in _run_vibe_inference.
         """
         combined_general: dict[str, float] = {}
 
-        # Start with AI general tags
+        # Start with AI tags (already filtered)
         for tag, conf in ai_tags.items():
             combined_general[tag] = conf
 
-        # Apply user tag penalty/boost
-        if user_tags:
+        # Apply user tag penalty/boost if using hints
+        if user_tags and self.use_user_hints:
             user_count = len(user_tags)
-
-            # Calculate penalty based on user tag count
             penalty = self.user_tag_penalty_max - (
                 self.user_tag_penalty_max - self.user_tag_penalty_min
             ) * min(user_count / self.user_tag_saturation, 1.0)
@@ -642,26 +601,15 @@ class TagGenerationStep(PipelineStep):
             # Boost user tags
             for tag in user_tags:
                 if tag in combined_general:
-                    # Boost existing AI tag
                     combined_general[tag] = min(1.0, combined_general[tag] / penalty)
                     combined_general[tag] = min(1.0, combined_general[tag] + self.user_bonus)
                 else:
-                    # Add user tag if missing
                     combined_general[tag] = 0.95
 
-        # Filter by threshold
-        final_general = {
-            tag: conf for tag, conf in combined_general.items() if conf >= self.threshold
-        }
-
-        return final_general
-
-    # =========================================================================
-    # Filtering
-    # =========================================================================
+        return combined_general
 
     def _apply_filters(self, tags: dict[str, float]) -> list[str]:
-        """Filter against blacklist or non-danbooru tags."""
+        """Apply blacklist/whitelist/danbooru_only."""
         result: list[str] = []
 
         for tag, conf in tags.items():
@@ -676,19 +624,4 @@ class TagGenerationStep(PipelineStep):
             result.append(tag)
 
         result.sort(key=lambda x: tags.get(x, 0), reverse=True)
-
         return result
-
-    def _clean_tag(self, tag: str) -> str:
-        if not tag:
-            return ""
-
-        cleaned = tag.strip()
-        cleaned = " ".join(cleaned.split())
-        cleaned = re.sub(r"\s+", " ", cleaned)
-        cleaned = cleaned.strip(".,;:!?\"'")
-
-        if not cleaned:
-            return ""
-
-        return cleaned
